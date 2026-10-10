@@ -1,0 +1,24 @@
+# Gradle / Android
+.gradle/
+.kotlin/
+**/build/
+local.properties
+*.jks
+*.keystore
+*.apk
+*.aab
+.cxx/
+captures/
+
+# 构建产物与依赖
+output/
+node_modules/
+
+# IDE / 系统
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# 日志
+*.log

@@ -1,0 +1,10 @@
+{
+  "name": "ddzhilian-android-chat",
+  "version": "1.2.0",
+  "private": true,
+  "description": "点点直连 · 原生 Android 聊天客户端（Kotlin / Jetpack Compose）",
+  "scripts": {
+    "android:chat:apk": "node scripts/build-android-chat.mjs",
+    "android:chat:check": "node scripts/build-android-chat.mjs --check"
+  }
+}

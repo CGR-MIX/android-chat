@@ -1,0 +1,13 @@
+# 统一以 LF 存储，避免跨平台出现整文件 diff
+* text=auto
+
+# Shell / Gradle 启动脚本必须保持 LF
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+
+# 二进制
+*.jar binary
+*.apk binary
+*.aab binary
+*.keystore binary
+*.jks binary
