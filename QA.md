@@ -165,4 +165,10 @@
 - 工作树里的全部改动已提交为一个提交 `7cd8ec8 feat: fixed glass opacity, git update channel, system opener for files`，并 `git push origin main`（`9c38a41..7cd8ec8`）。远端 `refs/heads/main` = `7cd8ec8388a86465ec3d5ec3fe4c0138c36dce7e`，本地与远端一致。
 - 提交范围：`app/` 的源码与资源、`README.md`、`QA.md`、`.gitignore`、`wechat-glass-demo/`。**未提交**：`s3.xml`（uiautomator 界面 dump，调试垃圾）与 `.pi/`（agent 规划目录），两者已加入 `.gitignore`；`output/`、`local.properties` 保持忽略。
 - 分发口径确认：安装包**不进仓库历史**（`.gitignore` 保留 `*.apk` 与 `output/`），更新包继续走该 tag 的 Release 附件；App 里的 raw 回退只在安装包真被提交进 tag 时才会命中。
-- 推送后复查匿名通道端点：`GET https://github.com/CGR-MIX/android-chat.git/info/refs?service=git-upload-pack` 仍返回 **401**，仓库目前还是私有的，App 端检查更新仍会提示不可匿名访问。
+- 推送后复查匿名通道端点：`GET https://github.com/CGR-MIX/android-chat.git/info/refs?service=git-upload-pack` 当时仍返回 **401**，仓库当时还是私有的（见下一节：已改为公开）。
+
+### 仓库改为公开后的通道复查
+
+- 匿名端点：`info/refs?service=git-upload-pack` 返回 **200**（`application/x-git-upload-pack-advertisement`），`raw.githubusercontent.com/CGR-MIX/android-chat/main/README.md` 与 `…/app/src/main/java/com/ddzhilian/chat/UpdateProtocol.kt` 均返回 200。此前 401 / 404 的前置条件已解除。
+- 用与 `UpdateProtocol.kt` 完全相同的算法（pkt-line 解析、`refs/tags` 过滤、语义版本比较）解析真实响应：HTTP 200、service 头正确、解析出 2 条 ref（`HEAD`、`refs/heads/main`）、**没有版本 tag**，因此 `latestRelease` 为 null —— App 的「检查更新」当前会显示「仓库里还没有版本 tag」。这也说明解析器对真实 GitHub 响应（含能力列表行）有效，此前只用合成数据覆盖过。
+- 仍未验证：真实 tag + Release 附件下的下载与安装链路（仓库尚无 tag，也没有 Release 附件）。
