@@ -87,7 +87,7 @@ implementation("io.github.kyant0:backdrop:1.0.6")
 更新源就是本仓库自身（`CGR-MIX/android-chat`），没有自建更新服务器，也没有第三方更新 SDK：
 
 - 设置页「版本更新」用 git smart HTTP 读仓库的 refs 广告（`info/refs?service=git-upload-pack`），从 `refs/tags` 里取语义版本最高的 tag，再与 APK 的 `versionName` 比较，因此不消耗 GitHub API 配额。
-- 发布一个版本 = `git tag v1.5.0 && git push origin v1.5.0`，并把 `output/ddzhilian-chat-debug.apk` 作为该 tag 的 Release 附件上传；附件缺失时回退到 tag 内提交的 `output/ddzhilian-chat-debug.apk`（raw 地址）。
+- 发布一个版本 = `git tag v1.5.0 && git push origin v1.5.0`，并把 `output/ddzhilian-chat-debug.apk` 作为该 tag 的 Release 附件上传。这是当前唯一的安装包分发方式：`.gitignore` 保留 `*.apk` 与 `output/`，安装包不进仓库历史，因此代码里的 raw 回退只在有人真的把安装包提交进 tag 时才会命中。
 - 下载完成后先校验文件头是 zip（APK），再通过 `FileProvider` 交给系统安装器。Android 8 起需要用户先允许本应用「安装未知应用」，未授权时跳到对应系统设置页，授权后回到设置页再点一次即可。
 - 仓库里还没有版本 tag、或 tag 里出现预发布版本（含 `-` / `+`）时不提示更新，并给出明确文案而不是假装已是最新。
 - 检查与下载失败只更新该区块的状态文案，不影响聊天与后台连接；整个过程不上传设备信息。

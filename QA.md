@@ -159,3 +159,10 @@
 
 - `npm run android:chat:check`：BUILD SUCCESSFUL；21 个单测全部通过；Lint **0 error** / 30 warning（无新增）。APK：`output/ddzhilian-chat-debug.apk`，SHA-256 `f133ea7442d13f8ec34763c1de8c6134648e7fe95d9f360e9175ae0c4dd3437c`。
 - 未运行模拟器/真机：未实测「点按未下载附件 → 应用内进度 → 自动拉起系统默认应用」的完整链路，也未验证不同 MIME 类型下系统是否存在可响应的默认应用。
+
+## 提交与推送：git push 作为更新通道
+
+- 工作树里的全部改动已提交为一个提交 `7cd8ec8 feat: fixed glass opacity, git update channel, system opener for files`，并 `git push origin main`（`9c38a41..7cd8ec8`）。远端 `refs/heads/main` = `7cd8ec8388a86465ec3d5ec3fe4c0138c36dce7e`，本地与远端一致。
+- 提交范围：`app/` 的源码与资源、`README.md`、`QA.md`、`.gitignore`、`wechat-glass-demo/`。**未提交**：`s3.xml`（uiautomator 界面 dump，调试垃圾）与 `.pi/`（agent 规划目录），两者已加入 `.gitignore`；`output/`、`local.properties` 保持忽略。
+- 分发口径确认：安装包**不进仓库历史**（`.gitignore` 保留 `*.apk` 与 `output/`），更新包继续走该 tag 的 Release 附件；App 里的 raw 回退只在安装包真被提交进 tag 时才会命中。
+- 推送后复查匿名通道端点：`GET https://github.com/CGR-MIX/android-chat.git/info/refs?service=git-upload-pack` 仍返回 **401**，仓库目前还是私有的，App 端检查更新仍会提示不可匿名访问。
