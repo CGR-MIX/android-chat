@@ -1,0 +1,14 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#121C17",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "液态玻璃质感研究",
+    "backgroundColor": "#121C17",
+    "backgroundTextStyle": "light"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

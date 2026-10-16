@@ -6,7 +6,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 const val DEFAULT_SERVER = "https://ws.ddzhilian.com"
-const val MAX_ATTACHMENT_BYTES = 20L * 1024 * 1024
+const val MAX_ATTACHMENT_BYTES = 500L * 1024 * 1024
+/** 玻璃填充的不透明度固定为 40%：设置页不再提供调节入口，也不再读取历史偏好。 */
+const val GLASS_OPACITY = .40f
+/** Lowest allowed value: deliberately very transparent, the blur still separates it from the page. */
+const val MIN_GLASS_OPACITY = .15f
+/** Upper bound for one picker batch, so a single tap cannot queue an unbounded transfer. */
+const val MAX_BATCH_ATTACHMENTS = 9
+/** 面向用户的单附件上限文案，避免提示与常量脱节。 */
+val MAX_ATTACHMENT_LABEL = (MAX_ATTACHMENT_BYTES / (1024L * 1024L)).toString() + " MB"
 
 data class ServerAddress(val http: HttpUrl) {
     val websocket: String get() = http.newBuilder().addPathSegment("ws").build().toString()

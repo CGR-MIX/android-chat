@@ -4,9 +4,11 @@ package com.ddzhilian.chat
 import android.app.Activity
 import android.Manifest
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -26,26 +28,34 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import com.kyant.backdrop.Backdrop
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import com.kyant.backdrop.backdrops.rememberCanvasBackdrop
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import java.time.Instant
+import com.ddzhilian.chat.liquid.LiquidButton
+import com.ddzhilian.chat.liquid.LiquidToggle
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -65,38 +75,82 @@ fun ChatApp(vm: ChatViewModel) {
     val s by vm.state.collectAsStateWithLifecycle()
     val dark = isSystemInDarkTheme()
     MaterialTheme(colorScheme = if (dark) DarkColors else LightColors) {
-      CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
+      CompositionLocalProvider(
+        LocalContentColor provides MaterialTheme.colorScheme.onSurface,
+        LocalGlassOpacity provides s.glassOpacity,
+      ) {
         val backdrop = rememberLayerBackdrop()
+        val menus = remember { GlassMenuController() }
         var tab by rememberSaveable { mutableIntStateOf(0) }
         var dialog by remember { mutableStateOf<String?>(null) }
         var pendingDownload by remember { mutableStateOf<Message?>(null) }
         var selectionRoom by remember { mutableStateOf<String?>(null) }
-        var imagePreview by remember { mutableStateOf<android.net.Uri?>(null) }
+        var imagePreview by remember { mutableStateOf<List<Uri>>(emptyList()) }
+        var plusOpen by remember { mutableStateOf(false) }
         var voiceMode by rememberSaveable { mutableStateOf(false) }
+        var choosingCall by remember { mutableStateOf<Boolean?>(null) }
+        var pendingCall by remember { mutableStateOf<Pair<Peer, Boolean>?>(null) }
         val context = LocalContext.current
-        var downloadDestination by remember { mutableStateOf<android.net.Uri?>(null) }
-        val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-            downloadDestination?.let { uri -> pendingDownload?.let { message -> vm.download(message, uri) } }
-            pendingDownload = null; downloadDestination = null
+        val storagePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val message = pendingDownload
+            pendingDownload = null
+            if (granted && message != null) vm.saveAttachment(message)
+            else if (!granted) vm.showError("未获得存储权限，无法保存到下载目录")
         }
-        val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            uri?.let { selected ->
-                if (context.contentResolver.getType(selected)?.startsWith("image/") == true) imagePreview = selected
-                else selectionRoom?.let { vm.upload(selected, it) }
+        // Images come from the system media picker; everything else from the document picker.
+        val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(9)) { uris ->
+            val picked = uris.filterNotNull()
+            if (picked.isNotEmpty()) imagePreview = picked
+        }
+        val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            val picked = uris.filterNotNull()
+            val room = selectionRoom
+            if (picked.isNotEmpty() && room != null) vm.uploadAll(picked, room)
+        }
+        val callPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+            pendingCall?.let { (peer, video) ->
+                if (callPermissionList(video).all { granted[it] == true }) vm.calls.start(peer, video)
+                else vm.showError("未获得通话权限，未开启麦克风或摄像头")
             }
+            pendingCall = null
         }
-        val saver = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val uri = result.data?.data
-            if (result.resultCode == Activity.RESULT_OK && uri != null && pendingDownload != null) {
-                if (Build.VERSION.SDK_INT >= 33 && androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    downloadDestination = uri; notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                } else { vm.download(pendingDownload!!, uri); pendingDownload = null }
-            } else pendingDownload = null
+        val callPeers = s.room?.members.orEmpty().filter { it.id != s.selfId && it.online }
+        val attachable = s.localReady && s.activeRoomId !in s.archivedRoomIds && s.room?.joined(s.selfId) == true
+        val canCall = s.connected && s.room?.joined(s.selfId) == true && callPeers.isNotEmpty()
+        fun startCall(video: Boolean) {
+            if (callPeers.isEmpty()) { vm.showError("房间内暂无其他在线设备"); return }
+            if (callPeers.size == 1) { pendingCall = callPeers.single() to video; callPermissions.launch(callPermissionList(video)) }
+            else choosingCall = video
         }
+        fun saveAttachment(message: Message) {
+            if (Build.VERSION.SDK_INT < 29 && androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                pendingDownload = message; storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            } else vm.saveAttachment(message)
+        }
+        fun viewAttachment(uri: Uri, mimeType: String) {
+            val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mimeType.ifBlank { "application/octet-stream" })
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            runCatching { context.startActivity(intent) }
+                .onFailure { vm.showError("无法打开附件，可长按后重新保存") }
+        }
+        fun openAttachment(message: Message) {
+            val uri = vm.savedUriFor(message)
+            if (uri != null) { viewAttachment(uri, message.mimeType); return }
+            // 还没下载：记下「接收完就打开」，再走原来的接收流程（含 API 26–28 的存储权限）。
+            vm.expectOpenAfterDownload(message)
+            saveAttachment(message)
+        }
+
         val snackbar = remember { SnackbarHostState() }
         LaunchedEffect(s.error, s.notice) {
             val text = s.error ?: s.notice
             if (text != null) { snackbar.showSnackbar(text); vm.clearNotice() }
+        }
+        // 点开还没下载的附件：接收完成后由 ViewModel 发一次性请求，这里拉起系统默认应用。
+        LaunchedEffect(s.openRequest) {
+            val request = s.openRequest ?: return@LaunchedEffect
+            viewAttachment(request.uri, request.mimeType)
+            vm.consumeOpenRequest()
         }
         BackHandler(s.activeRoomId != null) { vm.back() }
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).imePadding()) {
@@ -104,16 +158,12 @@ fun ChatApp(vm: ChatViewModel) {
                 Wallpaper(dark)
                 if (s.activeRoomId == null) {
                     when (tab) {
-                        0 -> RoomList(s, vm, onNew = { dialog = "new" })
+                        0 -> RoomList(s, vm, menus, onNew = { dialog = "new" })
                         1 -> DeviceList(s, vm, onPair = { dialog = "pair" })
-                        else -> Settings(s, vm)
+                        else -> Settings(s, vm, dark)
                     }
                 } else {
-                    Conversation(s, vm) { message ->
-                        pendingDownload = message
-                        saver.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                            .setType(message.mimeType.ifBlank { "application/octet-stream" }).putExtra(Intent.EXTRA_TITLE, message.fileName))
-                    }
+                    Conversation(s, vm, menus, onDownload = ::openAttachment)
                 }
             }
             Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(horizontal = 18.dp, vertical = 10.dp)
@@ -126,19 +176,20 @@ fun ChatApp(vm: ChatViewModel) {
                         Text(if (s.connected) (s.room?.members?.count { it.online } ?: 0).toString() + " 人在线" else s.status,
                             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    CallActions(s, vm)
                     IconButton(onClick = { dialog = "search" }) { Icon(Icons.Rounded.Search, "搜索消息") }
                     IconButton(onClick = { dialog = "info" }) { Icon(Icons.Rounded.Info, "房间信息") }
                 } else {
                     Box(Modifier.padding(start = 10.dp, end = 10.dp).size(34.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
                         Icon(Icons.AutoMirrored.Rounded.Chat, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(20.dp))
                     }
+
                     Text("点点直连", Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                     Box(Modifier.size(6.dp).background(if (s.connected) Color(0xFF61966F) else Color(0xFFC28750), CircleShape))
                     Text(if (s.connected) "在线" else "连接中", Modifier.padding(start = 6.dp, end = 6.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     IconButton(onClick = { dialog = "new" }) { Icon(Icons.Rounded.Add, "新建或加入聊天") }
                 }
             }
+
             if (s.activeRoomId == null) {
                 LiquidChatDock(
                     selectedIndex = tab, onSelected = { tab = it }, backdrop = backdrop,
@@ -148,38 +199,85 @@ fun ChatApp(vm: ChatViewModel) {
                 )
             } else {
                 Row(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(horizontal = 12.dp, vertical = 10.dp)
-                    .widthIn(max = 760.dp).fillMaxWidth().glass(backdrop, s.reduceTransparency).padding(6.dp), verticalAlignment = Alignment.Bottom) {
-                    IconButton(onClick = { selectionRoom = s.activeRoomId; picker.launch(arrayOf("*/*")) }, enabled = s.localReady && s.activeRoomId !in s.archivedRoomIds && s.room?.joined(s.selfId) == true && !s.transferring) {
+                    .widthIn(max = 760.dp).fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                    // Round attach button, deliberately separate from the input capsule.
+                    Box(Modifier.size(ControlHeight).glass(backdrop, s.reduceTransparency, shape = CircleShape)
+                        .clickable(role = Role.Button, enabled = s.localReady) { plusOpen = !plusOpen }, contentAlignment = Alignment.Center) {
                         if (s.transferring) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        else Icon(Icons.Rounded.Add, "添加图片或文件")
+                        if (s.transferring) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        else Icon(if (plusOpen) Icons.Rounded.Close else Icons.Rounded.Add, "添加图片、文件或发起通话")
                     }
-                    IconButton(onClick = { voiceMode = !voiceMode; vm.voice.finishRecording(false) }) { Icon(if (voiceMode) Icons.Rounded.Keyboard else Icons.Rounded.Mic, if (voiceMode) "切换打字" else "切换语音消息") }
-                    if (voiceMode) VoiceRecordButton(s.activeRoomId!!, vm, Modifier.weight(1f))
-                    else BasicTextField(s.draft, vm::draft, Modifier.weight(1f).heightIn(min = 48.dp, max = 144.dp).padding(vertical = 13.dp, horizontal = 3.dp),
-                        textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp, lineHeight = 22.sp), maxLines = 5,
-                        cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
-                        decorationBox = { inner -> Box { if (s.draft.isEmpty()) Text(if (s.connected) "聊点什么…" else "离线，发送后联网自动重试", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp); inner() } })
-                    FilledIconButton(onClick = vm::sendText, enabled = !voiceMode && s.localReady && s.activeRoomId !in s.archivedRoomIds && s.draft.isNotBlank() && s.room?.joined(s.selfId) == true, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Rounded.ArrowUpward, "发送消息")
+                    Spacer(Modifier.width(10.dp))
+                    // Only horizontal padding: vertical padding would sit INSIDE heightIn, so the
+                    // capsule height would become content+padding and drift. heightIn(min) alone
+                    // gives exactly ControlHeight for one line and still grows for multiple lines.
+                    Row(Modifier.weight(1f).glass(backdrop, s.reduceTransparency).heightIn(min = ControlHeight).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { voiceMode = !voiceMode; vm.voice.finishRecording(false) }) { Icon(if (voiceMode) Icons.Rounded.Keyboard else Icons.Rounded.Mic, if (voiceMode) "切换打字" else "切换语音消息") }
+                        if (voiceMode) VoiceRecordButton(s.activeRoomId!!, vm, Modifier.weight(1f).align(Alignment.CenterVertically))
+                        else BasicTextField(s.draft, vm::draft, Modifier.weight(1f).heightIn(min = 48.dp, max = 144.dp).padding(vertical = 13.dp, horizontal = 3.dp),
+                            textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp, lineHeight = 22.sp), maxLines = 5,
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+                            decorationBox = { inner -> Box { if (s.draft.isEmpty()) Text(if (s.connected) "聊点什么…" else "离线，发送后联网自动重试", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp); inner() } })
+                        FilledIconButton(onClick = vm::sendText, enabled = !voiceMode && attachable && s.draft.isNotBlank(), modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Rounded.ArrowUpward, "发送消息")
+                        }
                     }
                 }
             }
             if (s.uploadProgress != null || s.downloadProgress != null) Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 84.dp, start = 18.dp, end = 18.dp)) { TransferStatus(s, vm) }
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 100.dp, start = 16.dp, end = 16.dp))
+            // Both overlays must stay outside the recorded layer, otherwise they would refract themselves.
+            GlassMenuOverlay(menus, backdrop, s.reduceTransparency)
+            if (plusOpen) {
+                GlassPlusPanel(backdrop, s.reduceTransparency, actions = listOf(
+                    PlusAction("图片", Icons.Rounded.PhotoLibrary, enabled = attachable) {
+                        selectionRoom = s.activeRoomId
+                        imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    PlusAction("文件", Icons.Rounded.Folder, enabled = attachable) {
+                        selectionRoom = s.activeRoomId
+                        filePicker.launch(arrayOf("*/*"))
+                    },
+                    PlusAction("音频通话", Icons.Rounded.Call, enabled = canCall) { startCall(false) },
+                    PlusAction("视频通话", Icons.Rounded.Videocam, enabled = canCall) { startCall(true) },
+                ), onDismiss = { plusOpen = false })
+            }
         }
-        imagePreview?.let { uri -> ImageSendPreview(uri, onDismiss = { imagePreview = null }, onSend = { original ->
-            selectionRoom?.let { vm.upload(uri, it, original) }; imagePreview = null
+        imagePreview.takeIf { it.isNotEmpty() }?.let { uris -> ImageSendPreview(uris, onDismiss = { imagePreview = emptyList() }, onSend = { original ->
+            selectionRoom?.let { vm.uploadAll(uris, it, original) }; imagePreview = emptyList()
         }) }
+        choosingCall?.let { video ->
+            AlertDialog(onDismissRequest = { choosingCall = null }, title = { Text("选择通话对象") }, text = {
+                Column { callPeers.forEach { peer -> TextButton(onClick = {
+                    choosingCall = null; pendingCall = peer to video; callPermissions.launch(callPermissionList(video))
+                }, modifier = Modifier.fillMaxWidth()) { Text(peer.name) } } }
+            }, confirmButton = { TextButton(onClick = { choosingCall = null }) { Text("取消") } })
+        }
         NativeCallOverlay(vm)
         when (dialog) {
+            "new" -> NewChatDialog(onDismiss = { dialog = null }, onCreate = { dialog = null; vm.createRoom() }, onJoin = { dialog = null; vm.join(it) }, onPair = { dialog = "pair" })
             "new" -> NewChatDialog(onDismiss = { dialog = null }, onCreate = { dialog = null; vm.createRoom() }, onJoin = { dialog = null; vm.join(it) }, onPair = { dialog = "pair" })
             "pair" -> EntryDialog("通过连接码聊天", "输入另一台设备显示的连接码", "连接码", { dialog = null }) { vm.pair(it); dialog = null }
             "search" -> MessageSearchDialog(s, vm) { dialog = null }
             "info" -> RoomInfo(s) { dialog = null }
         }
     }
-    }
 }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 @Composable
 internal fun Modifier.glass(
@@ -187,21 +285,34 @@ internal fun Modifier.glass(
     shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(32.dp),
 ): Modifier {
     val surface = MaterialTheme.colorScheme.surface
+    val alpha = LocalGlassOpacity.current
+    // Frosting has to fall off with the veil. A fixed blur radius smears whatever is behind the
+    // surface into flat grey, so the material keeps reading as milky even when the veil is thin and
+    // no text behind it is ever legible. Reaching zero blur at MIN_GLASS_OPACITY is what keeps the
+    // fixed 40% veil honest.
+    val frosted = ((alpha - MIN_GLASS_OPACITY) / (1f - MIN_GLASS_OPACITY)).coerceIn(0f, 1f)
+    val blurRadius = 8.dp * (frosted * frosted)
     return if (reduce || Build.VERSION.SDK_INT < 33) this.background(surface, shape).border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
     else this.drawBackdrop(backdrop = backdrop, shape = { shape }, effects = {
-        vibrancy(); blur(8.dp.toPx()); lens(18.dp.toPx(), 28.dp.toPx())
-    }, onDrawSurface = { drawRect(surface.copy(alpha = .72f)) })
+        vibrancy()
+        // createBlurEffect rejects a zero radius, so skip the effect entirely at full clarity.
+        if (blurRadius > 0.dp) blur(blurRadius.toPx())
+        lens(18.dp.toPx(), 28.dp.toPx())
+    }, onDrawSurface = { drawRect(surface.copy(alpha = alpha)) })
+}
+
+/** Wallpaper drawing, shared by the on-screen canvas and the backdrop the liquid controls sample. */
+private fun DrawScope.drawWallpaper(dark: Boolean) {
+    drawRect(if (dark) Color(0xFF121C17) else Paper)
+    drawCircle(Brush.radialGradient(listOf(if (dark) Color(0xFF324D3B) else Color(0xFFD8E4D1), Color.Transparent),
+        center = Offset(size.width * .95f, size.height * .25f), radius = size.width * .95f), size.width * .95f, Offset(size.width * .95f, size.height * .25f))
+    drawCircle(Brush.radialGradient(listOf(if (dark) Color(0xFF25372C) else Color(0xFFE1E8D9), Color.Transparent),
+        center = Offset(0f, size.height * .85f), radius = size.width * .8f), size.width * .8f, Offset(0f, size.height * .85f))
 }
 
 @Composable
 private fun Wallpaper(dark: Boolean) {
-    Canvas(Modifier.fillMaxSize()) {
-        drawRect(if (dark) Color(0xFF121C17) else Paper)
-        drawCircle(Brush.radialGradient(listOf(if (dark) Color(0xFF324D3B) else Color(0xFFD8E4D1), Color.Transparent),
-            center = Offset(size.width * .95f, size.height * .25f), radius = size.width * .95f), size.width * .95f, Offset(size.width * .95f, size.height * .25f))
-        drawCircle(Brush.radialGradient(listOf(if (dark) Color(0xFF25372C) else Color(0xFFE1E8D9), Color.Transparent),
-            center = Offset(0f, size.height * .85f), radius = size.width * .8f), size.width * .8f, Offset(0f, size.height * .85f))
-    }
+    Canvas(Modifier.fillMaxSize()) { drawWallpaper(dark) }
 }
 
 @Composable
@@ -212,7 +323,7 @@ private fun PageHeading(kicker: String, title: String, detail: String) {
 }
 
 @Composable
-private fun RoomList(s: ChatState, vm: ChatViewModel, onNew: () -> Unit) {
+private fun RoomList(s: ChatState, vm: ChatViewModel, menus: GlassMenuController, onNew: () -> Unit) {
     var search by rememberSaveable { mutableStateOf("") }
     val rooms = s.rooms.filter { it.title(s.selfId).contains(search, ignoreCase = true) || it.preview.contains(search, ignoreCase = true) }.sortedWith(compareByDescending<Room> { s.preferences[it.id]?.pinned == true }.thenByDescending { it.updated })
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 108.dp, bottom = 140.dp)) {
@@ -236,9 +347,17 @@ private fun RoomList(s: ChatState, vm: ChatViewModel, onNew: () -> Unit) {
             }
         }
         items(rooms, key = { it.id }) { room ->
-            var roomMenu by remember(room.id) { mutableStateOf(false) }
-            Box {
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).combinedClickable(onClick = { vm.openRoom(room.id) }, onLongClick = { roomMenu = true }).padding(vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+            var anchor by remember(room.id) { mutableStateOf(Rect.Zero) }
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
+                .onGloballyPositioned { anchor = it.boundsInWindow() }
+                .combinedClickable(onClick = { vm.openRoom(room.id) }, onLongClick = {
+                    val pinned = s.preferences[room.id]?.pinned == true
+                    val muted = s.preferences[room.id]?.muted == true
+                    menus.show(anchor, listOf(
+                        GlassMenuItem(if (pinned) "取消置顶" else "置顶会话", if (pinned) Icons.Rounded.PushPin else Icons.Rounded.PushPin) { vm.roomPreference(room.id, pinned = !pinned) },
+                        GlassMenuItem(if (muted) "关闭免打扰" else "消息免打扰", if (muted) Icons.Rounded.NotificationsActive else Icons.Rounded.NotificationsOff) { vm.roomPreference(room.id, muted = !muted) },
+                    ))
+                }).padding(vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                 Avatar(room.title(s.selfId), room.isPublic || room.isLan)
                 Column(Modifier.weight(1f).padding(start = 14.dp, end = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(room.title(s.selfId), fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -254,11 +373,6 @@ private fun RoomList(s: ChatState, vm: ChatViewModel, onNew: () -> Unit) {
                     Text(if (room.isPublic) "公共" else if (room.isLan) "局域网" else "私聊", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = .08f), RoundedCornerShape(8.dp)).padding(horizontal = 7.dp, vertical = 3.dp))
                 }
-            }
-            DropdownMenu(roomMenu, onDismissRequest = { roomMenu = false }) {
-                DropdownMenuItem(text = { Text(if (s.preferences[room.id]?.pinned == true) "取消置顶" else "置顶会话") }, onClick = { roomMenu = false; vm.roomPreference(room.id, pinned = s.preferences[room.id]?.pinned != true) })
-                DropdownMenuItem(text = { Text(if (s.preferences[room.id]?.muted == true) "关闭免打扰" else "消息免打扰") }, onClick = { roomMenu = false; vm.roomPreference(room.id, muted = s.preferences[room.id]?.muted != true) })
-            }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .07f))
         }
@@ -303,18 +417,40 @@ private fun DeviceList(s: ChatState, vm: ChatViewModel, onPair: () -> Unit) {
     }
 }
 
+/** One rendered message row: a single message, or a stacked run of consecutive images. */
+private class MessageRow(val key: String, val messages: List<Message>)
+
+/** Consecutive images from the same sender collapse into one stack, newest on top. */
+private fun groupImages(newestFirst: List<Message>): List<MessageRow> = buildList {
+    var index = 0
+    while (index < newestFirst.size) {
+        val message = newestFirst[index]
+        if (message.isImage) {
+            val run = mutableListOf(message)
+            var next = index + 1
+            while (next < newestFirst.size && newestFirst[next].isImage && newestFirst[next].senderId == message.senderId) {
+                run.add(newestFirst[next]); next++
+            }
+            add(MessageRow("images-" + message.id, run)); index = next
+        } else {
+            add(MessageRow(message.id, listOf(message))); index++
+        }
+    }
+}
+
 @Composable
-private fun Conversation(s: ChatState, vm: ChatViewModel, onDownload: (Message) -> Unit) {
+private fun Conversation(s: ChatState, vm: ChatViewModel, menus: GlassMenuController, onDownload: (Message) -> Unit) {
     val listState = rememberLazyListState()
     val newestFirst = s.messages.asReversed()
+    val rows = remember(newestFirst) { groupImages(newestFirst) }
     val lastId = newestFirst.firstOrNull()?.id
     var galleryId by remember(s.activeRoomId) { mutableStateOf<String?>(null) }
     var positioned by remember(s.activeRoomId) { mutableStateOf(false) }
-    LaunchedEffect(s.activeRoomId, s.jumpMessageId, s.firstUnreadId, lastId) {
+    LaunchedEffect(s.activeRoomId, s.jumpMessageId, s.firstUnreadId, lastId, rows) {
         val target = s.jumpMessageId ?: if (!positioned) s.firstUnreadId else null
-        val index = newestFirst.indexOfFirst { it.id == target }
+        val index = rows.indexOfFirst { row -> row.messages.any { it.id == target } }
         if (index >= 0) { listState.scrollToItem(index); positioned = true }
-        else if (!positioned && newestFirst.isNotEmpty()) { listState.scrollToItem(0); positioned = true }
+        else if (!positioned && rows.isNotEmpty()) { listState.scrollToItem(0); positioned = true }
         else if (s.jumpMessageId == null && listState.firstVisibleItemIndex < 2) listState.scrollToItem(0)
     }
     LaunchedEffect(s.activeRoomId, lastId, listState.firstVisibleItemIndex, positioned) {
@@ -322,10 +458,12 @@ private fun Conversation(s: ChatState, vm: ChatViewModel, onDownload: (Message) 
     }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), state = listState, reverseLayout = true,
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 100.dp, bottom = 126.dp), verticalArrangement = Arrangement.spacedBy(17.dp)) {
-        items(newestFirst, key = { it.id }) { message ->
+        items(rows, key = { it.key }) { row ->
             Column {
-                if (message.id == s.firstUnreadId) TextButton(onClick = vm::locateFirstUnread, modifier = Modifier.fillMaxWidth()) { Text("未读消息 · 定位最早未读") }
-                MessageBubble(message, message.senderId == s.selfId, vm, onDownload) { galleryId = message.id }
+                if (row.messages.any { it.id == s.firstUnreadId }) TextButton(onClick = vm::locateFirstUnread, modifier = Modifier.fillMaxWidth()) { Text("未读消息 · 定位最早未读") }
+                val single = row.messages.singleOrNull()
+                if (row.messages.first().isImage) ImageStackBubble(row.messages, s, vm, menus, onDownload) { galleryId = it }
+                else if (single != null) MessageBubble(single, single.senderId == s.selfId, vm, menus, onDownload) { galleryId = single.id }
             }
         }
         if (s.loading) item { Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) } }
@@ -336,43 +474,71 @@ private fun Conversation(s: ChatState, vm: ChatViewModel, onDownload: (Message) 
     galleryId?.let { id -> ImageGallery(s.messages.filter { it.isImage }, id, vm, onDownload) { galleryId = null } }
 }
 
+/** A run of images shown as one stacked card. Dragging the top card in any direction switches image. */
 @Composable
-private fun MessageBubble(message: Message, own: Boolean, vm: ChatViewModel, onDownload: (Message) -> Unit, onImage: () -> Unit) {
-    var menu by remember { mutableStateOf(false) }
-    val clipboard = LocalClipboardManager.current
-    Column(Modifier.fillMaxWidth(), horizontalAlignment = if (own) Alignment.End else Alignment.Start) {
-        if (!own) Text(message.senderName, Modifier.padding(start = 5.dp, bottom = 6.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Box {
-            Column(Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomEnd = if (own) 6.dp else 22.dp, bottomStart = if (own) 22.dp else 6.dp))
-                .background(if (own) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface.copy(alpha = .94f))
-                .combinedClickable(onClick = { if (message.delivery == Delivery.Failed) vm.retry(message) else if (message.isImage) onImage() else if (message.isVoice) vm.voice.toggle(message) else if (message.fileName != null) onDownload(message) }, onLongClick = { menu = true })
-                .padding(horizontal = 17.dp, vertical = 13.dp)) {
-                val color = if (own) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                if (message.isImage) AttachmentThumbnail(message, vm)
-                else if (message.isVoice) VoiceBubble(message, vm, color)
-                else if (message.fileName != null) Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(if (message.mimeType.startsWith("image/")) Icons.Rounded.Image else Icons.AutoMirrored.Rounded.InsertDriveFile, null, tint = color, modifier = Modifier.size(30.dp))
-                    Column(Modifier.padding(start = 10.dp).weight(1f, fill = false)) {
-                        Text(message.fileName, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = color, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text(formatBytes(message.size) + " · 点击保存", fontSize = 10.sp, color = color.copy(alpha = .78f))
-                    }
-                } else Text(message.text, fontSize = 16.sp, lineHeight = 24.sp, color = color)
-            }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text("复制") }, onClick = { clipboard.setText(AnnotatedString(message.fileName ?: message.text)); menu = false })
-                if (own && message.delivery != Delivery.Sent) DropdownMenuItem(text = { Text("移除待发送消息") }, onClick = { menu = false; vm.cancelPending(message) })
-                if (own && message.delivery == Delivery.Sent) DropdownMenuItem(text = { Text("撤回消息") }, onClick = { vm.recall(message); menu = false })
-                if (message.fileName != null) DropdownMenuItem(text = { Text("保存附件") }, onClick = { onDownload(message); menu = false })
-            }
-        }
-        Text(when (message.delivery) { Delivery.Queued -> "等待发送 · 已保存在本机"; Delivery.Sending -> "发送中…"; Delivery.Failed -> "发送失败 · 点击重试"; else -> formatTime(message.createdAt) },
+private fun ImageStackBubble(images: List<Message>, s: ChatState, vm: ChatViewModel, menus: GlassMenuController, onDownload: (Message) -> Unit, onOpen: (String) -> Unit) {
+    val own = images.first().senderId == s.selfId
+    val top = images.first()
+    var anchor by remember(top.id) { mutableStateOf(Rect.Zero) }
+    Column(Modifier.fillMaxWidth().onGloballyPositioned { anchor = it.boundsInWindow() }.padding(start = 8.dp, end = 8.dp), horizontalAlignment = if (own) Alignment.End else Alignment.Start) {
+        if (!own) Text(top.senderName, Modifier.padding(start = 5.dp, bottom = 6.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ImageStackCard(images, vm,
+            onOpen = { message -> onOpen(message.id) },
+            onLongPress = { message -> menus.show(anchor, messageMenu(message, own, vm, onDownload) { onOpen(message.id) }) })
+        Text(deliveryLabel(top) + if (images.size > 1) " · ${images.size} 张图片 · 左右滑动 · 点展开" else "",
             Modifier.padding(horizontal = 4.dp, vertical = 5.dp), fontSize = 10.sp,
-            color = if (message.delivery == Delivery.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            color = if (top.delivery == Delivery.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-private fun Settings(s: ChatState, vm: ChatViewModel) {
+private fun MessageBubble(message: Message, own: Boolean, vm: ChatViewModel, menus: GlassMenuController, onDownload: (Message) -> Unit, onImage: () -> Unit) {
+    var anchor by remember(message.id) { mutableStateOf(Rect.Zero) }
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = if (own) Alignment.End else Alignment.Start) {
+        if (!own) Text(message.senderName, Modifier.padding(start = 5.dp, bottom = 6.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box(Modifier.onGloballyPositioned { anchor = it.boundsInWindow() }) {
+            Column(Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomEnd = if (own) 6.dp else 22.dp, bottomStart = if (own) 22.dp else 6.dp))
+                .background(if (own) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface.copy(alpha = .94f))
+                .combinedClickable(onClick = { if (message.delivery == Delivery.Failed) vm.retry(message) else if (message.isVoice) vm.voice.toggle(message) else if (message.fileName != null) onDownload(message) }, onLongClick = { menus.show(anchor, messageMenu(message, own, vm, onDownload) { onImage() }) })
+                .padding(horizontal = 17.dp, vertical = 13.dp)) {
+                val color = if (own) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                if (message.isVoice) VoiceBubble(message, vm, color)
+                else if (message.fileName != null) Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(if (message.mimeType.startsWith("image/")) Icons.Rounded.Image else Icons.AutoMirrored.Rounded.InsertDriveFile, null, tint = color, modifier = Modifier.size(30.dp))
+                    Column(Modifier.padding(start = 10.dp).weight(1f, fill = false)) {
+                        Text(message.fileName, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = color, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(formatBytes(message.size) + " · 点击打开", fontSize = 10.sp, color = color.copy(alpha = .78f))
+                    }
+                } else Text(message.text, fontSize = 16.sp, lineHeight = 24.sp, color = color)
+            }
+        }
+        Text(deliveryLabel(message), Modifier.padding(horizontal = 4.dp, vertical = 5.dp), fontSize = 10.sp,
+            color = if (message.delivery == Delivery.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+private fun deliveryLabel(message: Message) = when (message.delivery) {
+    Delivery.Queued -> "等待发送 · 已保存在本机"; Delivery.Sending -> "发送中…"; Delivery.Failed -> "发送失败 · 点击重试"; else -> formatTime(message.createdAt)
+}
+
+/** Shared long-press actions, drawn in the liquid-glass overlay instead of a platform dropdown. */
+private fun messageMenu(message: Message, own: Boolean, vm: ChatViewModel, onDownload: (Message) -> Unit, onOpen: (() -> Unit)? = null) = buildList {
+    add(GlassMenuItem("复制", Icons.Rounded.ContentCopy) { vm.copyMessage(message) })
+    if (own && message.delivery != Delivery.Sent) add(GlassMenuItem("移除待发送消息", Icons.Rounded.DeleteOutline, danger = true) { vm.cancelPending(message) })
+    if (own && message.delivery == Delivery.Sent) add(GlassMenuItem("撤回消息", Icons.AutoMirrored.Rounded.Undo, danger = true) { vm.recall(message) })
+    if (message.fileName != null) {
+        // 未下载时也走同一路径：接收完成即打开，文件同时留在 Downloads/点点直连。
+        add(GlassMenuItem("打开附件", Icons.Rounded.OpenInNew) { onDownload(message) })
+    }
+    if (message.isImage) onOpen?.let { open -> add(GlassMenuItem("全屏查看", Icons.Rounded.OpenInFull) { open() }) }
+}
+
+@Composable
+private fun Settings(s: ChatState, vm: ChatViewModel, dark: Boolean) {
+    // A self-contained backdrop painted from the same wallpaper recipe as the page behind it. It must
+    // NOT be the page's own recorded layer: a glass control drawn inside the layer it samples recurses
+    // through RenderNode and takes the process down with a native stack overflow.
+    val backdrop = rememberCanvasBackdrop { drawWallpaper(dark) }
     var name by rememberSaveable(s.name) { mutableStateOf(s.name) }
     var reduce by rememberSaveable(s.reduceTransparency) { mutableStateOf(s.reduceTransparency) }
     val context = LocalContext.current
@@ -382,18 +548,31 @@ private fun Settings(s: ChatState, vm: ChatViewModel) {
         OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("设备名称") }, singleLine = true, shape = RoundedCornerShape(18.dp))
         Row(Modifier.fillMaxWidth().padding(vertical = 24.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { Text("减少透明效果", fontWeight = FontWeight.Medium); Text("使用实色界面，提升可读性", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            Switch(reduce, { reduce = it })
+            // Always the liquid switch, in both appearances. Solid mode only repaints its surface
+            // (see LiquidToggle's `reduce`), so the control does not change shape or size when toggled.
+            LiquidToggle(selected = { reduce }, onSelect = { reduce = it }, backdrop = backdrop, reduce = reduce)
         }
-        Button(onClick = { vm.settings(name, reduce) }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(18.dp)) { Text("保存设置") }
-        BackgroundNotificationSetting(s, vm)
+        // Real liquid-glass button, kept in both appearances: the capsule stretches toward the touch
+        // point while pressed, and in solid mode only its surface is repainted.
+        LiquidButton(
+            onClick = { vm.settings(name, reduce) },
+            backdrop = backdrop,
+            modifier = Modifier.fillMaxWidth(),
+            reduce = reduce,
+        ) {
+            Text("保存设置", fontWeight = FontWeight.Medium)
+        }
+        Spacer(Modifier.height(24.dp))
+        UpdateSetting(s, vm, backdrop, reduce)
+        BackgroundNotificationSetting(s, vm, backdrop, reduce)
         CacheAndNotificationSettings(vm)
         if (!s.connected) TextButton(onClick = vm::connect, modifier = Modifier.fillMaxWidth()) { Text("重新连接") }
         HorizontalDivider(Modifier.padding(vertical = 28.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f))
         Text("原生 Android · Liquid Glass", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text("界面由 Kyant0 / AndroidLiquidGlass 驱动。Android 13 及以上启用折射与模糊，更早版本使用实色外观。", Modifier.padding(top = 10.dp), fontSize = 12.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/Kyant0/AndroidLiquidGlass"))) }, contentPadding = PaddingValues(0.dp)) { Text("查看开源项目  ↗", fontSize = 12.sp) }
-        Text("版本 1.2.0 · 无广告 · 无通讯录权限", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("支持文字、文件及一对一音视频通话。后台通知需要保持连接；被系统终止或强制停止后无法保证送达。卸载会清除本机身份。", Modifier.padding(top = 14.dp), fontSize = 11.sp, lineHeight = 19.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Kyant0/AndroidLiquidGlass"))) }, contentPadding = PaddingValues(0.dp)) { Text("查看开源项目  ↗", fontSize = 12.sp) }
+        Text("版本 ${BuildConfig.VERSION_NAME} · 无广告 · 无通讯录权限", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("支持文字、图片、文件及一对一音视频通话。图片按原始比例显示，多张图片叠成一张卡片且每张都显示缩略内容，上下左右滑动可切换。后台通知需要保持连接；被系统终止或强制停止后无法保证送达。卸载会清除本机身份。", Modifier.padding(top = 14.dp), fontSize = 11.sp, lineHeight = 19.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -435,7 +614,7 @@ private fun RoomInfo(s: ChatState, dismiss: () -> Unit) {
     AlertDialog(onDismissRequest = dismiss, title = { Text(s.room?.title(s.selfId) ?: "房间信息") }, text = {
         Column { Text("房间 ID", fontSize = 12.sp); Text(s.activeRoomId.orEmpty(), Modifier.padding(vertical = 8.dp), fontSize = 13.sp)
             Text(s.room?.members?.joinToString("、") { it.name }.orEmpty(), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("文字长按可复制；自己发送的消息可撤回。附件点按保存，单个上传最大 20 MB。", Modifier.padding(top = 18.dp), fontSize = 12.sp, lineHeight = 20.sp)
+            Text("长按消息打开玻璃操作框；自己发送的消息可撤回。附件点按即用系统默认应用打开，并同时保存到 Downloads/点点直连，单个上传最大 $MAX_ATTACHMENT_LABEL。", Modifier.padding(top = 18.dp), fontSize = 12.sp, lineHeight = 20.sp)
         }
     }, confirmButton = { TextButton(onClick = { clipboard.setText(AnnotatedString(s.activeRoomId.orEmpty())); dismiss() }) { Text("复制房间 ID") } }, dismissButton = { TextButton(onClick = dismiss) { Text("关闭") } })
 }

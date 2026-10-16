@@ -19,6 +19,8 @@ import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import com.ddzhilian.chat.liquid.LiquidToggle
+import com.kyant.backdrop.Backdrop
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -36,10 +38,11 @@ import kotlinx.coroutines.delay
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 
-private fun callPermissions(video: Boolean) = if (video) arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA) else arrayOf(Manifest.permission.RECORD_AUDIO)
+/** Permissions a call needs. Shared with the composer's attach/call panel. */
+internal fun callPermissionList(video: Boolean) = if (video) arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA) else arrayOf(Manifest.permission.RECORD_AUDIO)
 
 @Composable
-fun BackgroundNotificationSetting(s: ChatState, vm: ChatViewModel) {
+fun BackgroundNotificationSetting(s: ChatState, vm: ChatViewModel, backdrop: Backdrop, reduce: Boolean) {
     val context = LocalContext.current
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) vm.backgroundNotifications(true) else vm.showError("通知未开启，可在系统设置中重新允许")
@@ -49,37 +52,21 @@ fun BackgroundNotificationSetting(s: ChatState, vm: ChatViewModel) {
             Text("后台消息与来电通知", fontWeight = FontWeight.Medium)
             Text("保持连接并显示常驻通知；可能增加耗电。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Switch(s.backgroundNotifications, { enabled ->
-            if (enabled && Build.VERSION.SDK_INT >= 33) launcher.launch(Manifest.permission.POST_NOTIFICATIONS) else vm.backgroundNotifications(enabled)
-        })
+        // Liquid glass switch, matching the slider and save button on this page. Solid mode only
+        // repaints its surface, so its geometry stays put when the setting is toggled.
+        LiquidToggle(
+            selected = { s.backgroundNotifications },
+            onSelect = { enabled ->
+                if (enabled && Build.VERSION.SDK_INT >= 33) launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                else vm.backgroundNotifications(enabled)
+            },
+            backdrop = backdrop,
+            reduce = reduce,
+        )
     }
     TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)) }) { Text("系统通知设置") }
 }
 
-@Composable
-fun CallActions(s: ChatState, vm: ChatViewModel) {
-    var choosing by remember { mutableStateOf<Boolean?>(null) }
-    var pending by remember { mutableStateOf<Pair<Peer, Boolean>?>(null) }
-    val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
-        pending?.let { (peer, video) ->
-            if (callPermissions(video).all { granted[it] == true }) vm.calls.start(peer, video) else vm.showError("未获得通话权限，未开启麦克风或摄像头")
-        }; pending = null
-    }
-    val peers = s.room?.members.orEmpty().filter { it.id != s.selfId && it.online }
-    fun start(video: Boolean) {
-        if (peers.size == 1) { pending = peers.single() to video; permissions.launch(callPermissions(video)) }
-        else choosing = video
-    }
-    IconButton(onClick = { start(false) }, enabled = s.connected && peers.isNotEmpty()) { Icon(Icons.Rounded.Call, "语音通话") }
-    IconButton(onClick = { start(true) }, enabled = s.connected && peers.isNotEmpty()) { Icon(Icons.Rounded.Videocam, "视频通话") }
-    choosing?.let { video ->
-        AlertDialog(onDismissRequest = { choosing = null }, title = { Text("选择通话对象") }, text = {
-            Column { peers.forEach { peer -> TextButton(onClick = {
-                choosing = null; pending = peer to video; permissions.launch(callPermissions(video))
-            }, modifier = Modifier.fillMaxWidth()) { Text(peer.name) } } }
-        }, confirmButton = { TextButton(onClick = { choosing = null }) { Text("取消") } })
-    }
-}
 
 @Composable
 fun NativeCallOverlay(vm: ChatViewModel) {
@@ -91,7 +78,7 @@ fun NativeCallOverlay(vm: ChatViewModel) {
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
         val latest = vm.calls.state.value
         if (latest?.id == permissionCallId && latest?.phase == CallPhase.Incoming) {
-            if (callPermissions(latest.video).all { granted[it] == true }) vm.calls.accept() else permissionDenied = true
+            if (callPermissionList(latest.video).all { granted[it] == true }) vm.calls.accept() else permissionDenied = true
         }
         permissionCallId = null
     }
@@ -134,7 +121,7 @@ fun NativeCallOverlay(vm: ChatViewModel) {
                 Row(horizontalArrangement = Arrangement.spacedBy(68.dp)) {
                     CallButton(Icons.Rounded.CallEnd, if (current.phase == CallPhase.Incoming) "拒绝" else "挂断", { vm.calls.end() }, Color(0xFFB83D4B))
                     if (current.phase == CallPhase.Incoming) CallButton(Icons.Rounded.Call, "接听", {
-                        permissionCallId = current.id; permission.launch(callPermissions(current.video))
+                        permissionCallId = current.id; permission.launch(callPermissionList(current.video))
                     }, Color(0xFF347A59))
                 }
                 Spacer(Modifier.height(20.dp))

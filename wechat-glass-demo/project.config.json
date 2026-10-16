@@ -1,0 +1,14 @@
+{
+  "miniprogramRoot": "miniprogram/",
+  "projectname": "wechat-liquid-glass-demo",
+  "description": "微信小程序液态玻璃质感研究 Demo",
+  "appid": "touristappid",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "postcss": true,
+    "minified": true
+  },
+  "compileType": "miniprogram",
+  "libVersion": "3.3.4"
+}

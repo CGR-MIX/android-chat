@@ -51,6 +51,12 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+/**
+ * The single shared control height. The composer capsule, the round "+" button and the bottom dock
+ * all use this one value, so their heights can never drift apart again.
+ */
+internal val ControlHeight = 56.dp
+
 /** One floating selection capsule. Drag previews a destination; only release changes the page. */
 @Composable
 internal fun LiquidChatDock(
@@ -105,11 +111,13 @@ internal fun LiquidChatDock(
     DisposableEffect(Unit) { onDispose { motionJob?.cancel() } }
 
     // Keep the track still: the raised selection, not the entire dock, breaks its silhouette.
-    val trackInset = 7.dp
+    // The dock is deliberately flat: exactly one composer-height bar, so it reads as a sibling of the
+    // input capsule instead of a tall navigation panel.
+    val trackInset = 4.dp
     val trackBackdrop = rememberLayerBackdrop()
     val selectionBackdrop = rememberCombinedBackdrop(backdrop, trackBackdrop)
     // drawBackdrop clips its own content: keep the track and raised selection as siblings.
-    Box(modifier) {
+    Box(modifier.height(ControlHeight)) {
         Box(Modifier.matchParentSize().layerBackdrop(trackBackdrop)
             .glass(backdrop, reduceTransparency, shape = RoundedCornerShape(50)))
         Box(Modifier.padding(trackInset).fillMaxWidth().onSizeChanged { dimensions = it }.selectableGroup()
@@ -199,10 +207,10 @@ internal fun LiquidChatDock(
                     .fillMaxHeight().padding(horizontal = 2.dp).graphicsLayer {
                         val p = if (dragging) dragPosition else position.value
                         translationX = p * slotWidth
-                        scaleX = 1f + .10f * lift + elongation
-                        // Clear BOTH track insets, then extend 10 dp past each outer edge.
-                        // Compute against actual content height so this also works with large fonts.
-                        val extraHeight = (trackInset * 2 + 20.dp).toPx()
+                        scaleX = 1f + .08f * lift + elongation
+                        // Clear BOTH track insets, then extend past each outer edge so the raised
+                        // selection still breaks the flat silhouette. Uses real height for large fonts.
+                        val extraHeight = (trackInset * 2 + 12.dp).toPx()
                         scaleY = 1f + (extraHeight / size.height.coerceAtLeast(1f)) * lift
                     }.then(capsuleMaterial))
             }
@@ -213,12 +221,13 @@ internal fun LiquidChatDock(
                         spring(dampingRatio = 1f, stiffness = 650f), label = "dock-icon-$index")
                     Column(Modifier.weight(1f).clip(RoundedCornerShape(50))
                         .selectable(selected = selectedIndex == index, role = Role.Tab, onClick = { onSelect(index) })
-                        .heightIn(min = 56.dp).padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(icon, null, Modifier.size(22.dp).graphicsLayer {
-                            scaleX = 1f + .12f * iconLift; scaleY = scaleX
-                            translationY = -2.dp.toPx() * iconLift
+                        .fillMaxHeight().padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center) {
+                        Icon(icon, null, Modifier.size(20.dp).graphicsLayer {
+                            scaleX = 1f + .1f * iconLift; scaleY = scaleX
+                            translationY = -1.dp.toPx() * iconLift
                         }, tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(label, fontSize = 11.sp, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                        Text(label, fontSize = 10.sp, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
                             color = MaterialTheme.colorScheme.onSurface)
                     }
                 }

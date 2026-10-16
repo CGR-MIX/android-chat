@@ -22,3 +22,7 @@ node_modules/
 
 # 日志
 *.log
+
+# 本地调试产物与 agent 工作目录（不随仓库分发）
+s3.xml
+.pi/

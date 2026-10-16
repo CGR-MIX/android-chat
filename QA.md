@@ -108,4 +108,54 @@
 
 构建日志：`.tmp/android-chat-v12-build.log`。产物：`output/android-chat/ddzhilian-chat-debug.apk`，versionName 1.2.0 / versionCode 3。
 
-本次构建校验文件：`b38924c18e26d1beec9a24e3f4bc88ad9089d2b70e7f3acf9fd10f8ca661cdbe  ddzhilian-chat-debug.apk`。
+
+## v1.4.x 附件撤回同步 / 默认下载 / 打开已存附件 / 图片堆叠展开
+
+本轮仅执行编译打包与协议级静态检查，未运行模拟器或真机交互验证。
+
+### 实现
+
+- **服务端（`ddzhilian` 主仓库）**：新增撤回墓碑 `server/data/history/recalled.json`（`recordRecall` / `listRecalledForRoom`），`deleteText`/`deleteFile` 成功后写入并持久化；新增 `GET /api/history/recalled?roomId=…`，复用 `authenticateHistoryRequest` + `authorizeRoomMember` 鉴权。需单独构建并重启线上后端。
+- **客户端撤回同步**：`syncRecalled(roomId)` 拉取该房间已撤回 ID，逐条 `recalled.add` + `local.remove(id, true)` + 从 cache 剔除；在 welcome/snapshot、openRoom、refresh 后调用；并把 snapshot 的 `historyFiles` 作为权威集合删除本地已发送但服务器已不存在的文件消息。
+- **默认下载路径**：`AttachmentFiles.defaultDownloadDestination`（API 29+ 用 `MediaStore.Downloads` + `RELATIVE_PATH=Download/点点直连`，API 26–28 用 `Environment` 返回 `file://`），同名自动编号；`WRITE_EXTERNAL_STORAGE maxSdkVersion=28`。
+- **已存附件再点打开**：`savedUriFor` / `markSaved`（prefs 记录，不随缓存清理删除）；接收完成 `finishPending` + `markSaved`；UI 点击附件未保存则自动保存、已保存则 `ACTION_VIEW` 打开；菜单/全屏查看按钮按状态显示「打开/保存」。
+- **图片堆叠/展开**：重写 `ImageStackCard`，堆叠态固定 4:3、左右扑克牌 peek（首张右侧 2、末张左侧 2、中间各 1），仅横向 `detectHorizontalDragGestures`、不循环、越界回弹、划出后回到底部动画；展开态竖排按原图比例显示，带展开/收起切换与动画。
+
+### 验证
+
+- `npm run android:chat:check`：BUILD SUCCESSFUL（Kotlin 协议测试、Lint、assembleDebug）。APK：`output/ddzhilian-chat-debug.apk`，SHA-256 `a3d57c1104545123bb925d73706e8dd11a7363481f3be0c5cc9a0419bdbe103a`。
+- `cd C:/Users/12467/Documents/707/ddzhilian && npm run build --prefix server`：通过。
+- 未运行模拟器/真机：上述 4 项行为验收未做实际交互验证，且需求 1 依赖更新并重启线上后端。
+
+本轮校验文件：`a3d57c1104545123bb925d73706e8dd11a7363481f3be0c5cc9a0419bdbe103a  ddzhilian-chat-debug.apk`。
+
+## v1.4.0 玻璃固定 40% / git 版本更新通道
+
+需求：内置一个版本更新通道并用 git 做通道；玻璃透明度固定 40% 且去掉设置页的调节条。
+
+### 实现
+
+- **玻璃固定 40%**：`GLASS_OPACITY = .40f` 取代原先用户可调的不透明度；`ChatViewModel` 不再从 `native_chat` 偏好读取 `glassOpacity`，写入方法 `glassOpacity(value)` 删除，设置页的「玻璃透明度」标题、百分比与 `LiquidSlider` 拉杆一并移除（`LiquidSlider.kt` 文件保留在代码库，暂无界面入口）。渲染层仍按 `MIN_GLASS_OPACITY`→1 的插值衰减模糊半径，所以 40% 时玻璃照样通透可见背后内容；「减少透明效果」行为不变。
+- **git 更新通道**（`UpdateProtocol.kt` / `UpdateChannel.kt` / `UpdateUi.kt`）：设置页「版本更新」用 git smart HTTP 读 `https://github.com/CGR-MIX/android-chat.git/info/refs?service=git-upload-pack`，从 `refs/tags` 取语义版本最高的 tag 与 `BuildConfig.VERSION_NAME` 比较；安装包先取 `releases/download/<tag>/ddzhilian-chat-debug.apk`，缺失时回退 `raw.githubusercontent.com/.../<tag>/output/ddzhilian-chat-debug.apk`；下载后校验文件头是 zip，再经 `FileProvider` 交给系统安装器（新增 `REQUEST_INSTALL_PACKAGES` 与 `res/xml/update_paths.xml`，只暴露 `cacheDir/updates`）。预发布 tag（含 `-`/`+`）、非版本 tag、peeled tag（`^{}`）都不进通道；仓库没有版本 tag 时明确提示而不是假装最新。
+- 设置页版本号文案改为读 `BuildConfig.VERSION_NAME`，不再硬编码 1.4.0。
+
+### 验证
+
+- `npm run android:chat:check`：BUILD SUCCESSFUL。单测 21 个全部通过，其中新增 `UpdateProtocolTest` 6 个（refs 广告解析、tag 过滤、版本比较、更新判定、下载地址回退）；Lint **0 error** / 30 warning（全部是既有的依赖版本与 KTX 建议，新增文件 0 条）。APK：`output/ddzhilian-chat-debug.apk`，SHA-256 `b09d884631fbca3fdf0c19ee1abd879ad2062a146c6e2dd84784fd5d0420cc31`。
+- 通道端点实测：`GET https://github.com/CGR-MIX/android-chat.git/info/refs?service=git-upload-pack` 当前返回 **401**；对照公开仓库 `Kyant0/AndroidLiquidGlass` 与 `torvalds/linux` 同一请求返回 200，`raw.githubusercontent.com/CGR-MIX/android-chat/main/README.md` 返回 404；`git ls-remote origin` 用本机凭据能读到 `refs/heads/main`。结论：`CGR-MIX/android-chat` 是**私有仓库**，匿名客户端读不到版本信息，因此通道要真正可用必须把版本仓库设为公开（或另建一个公开的发布仓库），并至少推一个版本 tag。在此之前设置页会显示「更新通道不可匿名访问（HTTP 401）：需要把版本仓库设为公开，检查更新才能免登录工作。」
+- 未运行模拟器/真机：40% 玻璃的实际观感、更新区块的状态机、下载与「安装未知应用」授权流程均未做真机交互验证。
+
+## v1.4.0 点击文件直接用系统默认应用打开
+
+需求：点击文件（附件）时用系统默认方式打开；图片与语音的交互保持不变。
+
+### 实现
+
+- **ViewModel**：新增 `expectOpenAfterDownload(message)` 记下「接收完就打开」的意图，以及一次性状态 `ChatState.openRequest`（`AttachmentOpen(uri, mimeType)`）。`markSaved` 落盘后若命中的是这次点开的消息，就发出打开请求；`downloadChanged(null)`（接收失败 / 取消）与下载未能启动时丢弃意图，避免以后误开；重复点同一条正在接收的附件仍会保留意图，接收完成后照常打开。已在本机的附件（`savedUriFor` 命中）不再重复下载，直接发请求。
+- **ChatUi**：`openAttachment` 改为「已在本机 → 直接打开；未下载 → 记下意图并走原来的接收流程（含 API 26–28 的存储权限）」；新增 `viewAttachment(uri, mimeType)` 统一拉起系统默认应用（`ACTION_VIEW` + `FLAG_GRANT_READ_URI_PERMISSION`，失败提示「无法打开附件」）；`LaunchedEffect(s.openRequest)` 消费一次性请求。气泡提示由「点击保存」改为「点击打开」，长按菜单的「保存附件」入口合并为「打开附件」（文件依然会落到 `Downloads/点点直连`）。
+- 图片仍走应用内图库 / 全屏查看，语音仍在应用内播放，均未改动。文档同步：README 的附件条目与「附件接收通知」描述、房间信息里的操作说明。
+
+### 验证
+
+- `npm run android:chat:check`：BUILD SUCCESSFUL；21 个单测全部通过；Lint **0 error** / 30 warning（无新增）。APK：`output/ddzhilian-chat-debug.apk`，SHA-256 `f133ea7442d13f8ec34763c1de8c6134648e7fe95d9f360e9175ae0c4dd3437c`。
+- 未运行模拟器/真机：未实测「点按未下载附件 → 应用内进度 → 自动拉起系统默认应用」的完整链路，也未验证不同 MIME 类型下系统是否存在可响应的默认应用。

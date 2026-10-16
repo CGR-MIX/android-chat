@@ -1,0 +1,554 @@
+/* 基础容器 */
+.stage {
+  position: relative;
+  width: 100vw;
+  min-height: 100vh;
+  background-color: #080f0c;
+  overflow: hidden;
+  box-sizing: border-box;
+
+  /* 默认 CSS 变量回退 */
+  --glass-blur: 14px;
+  --glass-bg: rgba(255, 255, 255, 0.12);
+  --glass-saturate: 160%;
+}
+
+/* 背景流动光斑，用来测试 backdrop-filter 的折射与透光感 */
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(65rpx);
+  pointer-events: none;
+  opacity: 0.65;
+  animation: float 14s infinite alternate ease-in-out;
+}
+
+.blob-1 {
+  width: 520rpx;
+  height: 520rpx;
+  background: radial-gradient(circle, #38ef7d 0%, #11998e 70%, transparent 100%);
+  top: 8%;
+  left: -80rpx;
+}
+
+.blob-2 {
+  width: 600rpx;
+  height: 600rpx;
+  background: radial-gradient(circle, #00f2fe 0%, #4facfe 70%, transparent 100%);
+  bottom: 8%;
+  right: -100rpx;
+  animation-duration: 18s;
+  animation-direction: alternate-reverse;
+}
+
+.blob-3 {
+  width: 440rpx;
+  height: 440rpx;
+  background: radial-gradient(circle, #f38181 0%, #fce38a 70%, transparent 100%);
+  top: 42%;
+  left: 28%;
+  opacity: 0.4;
+  animation-duration: 22s;
+}
+
+@keyframes float {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(40rpx, 60rpx) scale(1.12); }
+}
+
+/* 底层穿透对照文字（用于测试去掉磨砂后的 100% 锐利透光质感） */
+.under-glass-watermark {
+  position: absolute;
+  top: 280rpx;
+  left: 30rpx;
+  right: 30rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 160rpx;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.28;
+}
+
+.watermark-line {
+  font-size: 42rpx;
+  font-weight: 900;
+  letter-spacing: 6rpx;
+  color: #38ef7d;
+  font-family: -apple-system, monospace;
+  text-shadow: 0 0 20rpx rgba(56, 239, 125, 0.4);
+}
+
+.content-scroll {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 50rpx 36rpx 80rpx;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+/* 标头区 */
+.header-box {
+  width: 100%;
+  margin-bottom: 30rpx;
+  text-align: center;
+}
+
+.badge-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16rpx;
+  margin-bottom: 16rpx;
+}
+
+.badge {
+  display: inline-block;
+  padding: 8rpx 20rpx;
+  background: rgba(56, 239, 125, 0.12);
+  border: 1px solid rgba(56, 239, 125, 0.35);
+  border-radius: 999rpx;
+  font-size: 20rpx;
+  color: #38ef7d;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.badge.badge-active {
+  background: rgba(0, 242, 254, 0.15);
+  border-color: rgba(0, 242, 254, 0.5);
+  color: #00f2fe;
+}
+
+.title {
+  display: block;
+  font-size: 42rpx;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.5px;
+  margin-bottom: 10rpx;
+}
+
+.desc {
+  display: block;
+  font-size: 24rpx;
+  color: rgba(226, 236, 229, 0.7);
+  line-height: 1.4;
+  padding: 0 16rpx;
+}
+
+/* ================= 核心控制台：双向联动滑块面板 ================= */
+.glass-control-dock {
+  position: relative;
+  width: 100%;
+  border-radius: 36rpx;
+  padding: 28rpx 32rpx;
+  box-sizing: border-box;
+  margin-bottom: 32rpx;
+  overflow: hidden;
+  isolation: isolate;
+
+  background: rgba(255, 255, 255, 0.07);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+
+  box-shadow:
+    inset 1px -1px 2px -0.5px rgba(255, 255, 255, 0.8),
+    inset -1px 1px 2px -0.5px rgba(255, 255, 255, 0.4),
+    0 16rpx 36rpx rgba(0, 0, 0, 0.3);
+}
+
+.dock-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12rpx;
+}
+
+.dock-title {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.dock-tags {
+  display: flex;
+  gap: 12rpx;
+}
+
+.tag-item {
+  font-size: 20rpx;
+  padding: 4rpx 14rpx;
+  border-radius: 8rpx;
+  background: rgba(255, 255, 255, 0.1);
+  color: #38ef7d;
+  font-family: monospace;
+}
+
+.slider-container {
+  width: 100%;
+  padding: 6rpx 0;
+}
+
+.dock-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 10rpx;
+}
+
+.sub-tip {
+  font-size: 21rpx;
+  color: rgba(255, 255, 255, 0.55);
+  flex: 1;
+  padding-right: 16rpx;
+  line-height: 1.35;
+}
+
+.sub-tip.tip-highlight {
+  color: #00f2fe;
+}
+
+.mini-toggle-btn {
+  margin: 0;
+  padding: 8rpx 20rpx;
+  font-size: 22rpx;
+  font-weight: 600;
+  line-height: 1.4;
+  border-radius: 999rpx;
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.mini-toggle-btn.btn-active {
+  background: rgba(0, 242, 254, 0.25);
+  border-color: #00f2fe;
+  color: #00f2fe;
+}
+
+/* ================= 核心 1：液态玻璃卡片 (动态注入变量) ================= */
+.glass-card {
+  position: relative;
+  width: 100%;
+  border-radius: 44rpx;
+  padding: 38rpx 36rpx;
+  box-sizing: border-box;
+  overflow: hidden;
+  isolation: isolate;
+
+  /* 动态联动：磨砂度 (blur) 与 底色透明度 (bg) 实时受驱动 */
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+
+  border: 1px solid rgba(255, 255, 255, 0.24);
+
+  /* 双重菲涅尔边缘内高光反射 */
+  box-shadow:
+    inset 1.5px -1.5px 2px -1px rgba(255, 255, 255, 0.95),
+    inset -1.5px 1.5px 2px -1px rgba(255, 255, 255, 0.55),
+    inset 0 0 12px rgba(0, 0, 0, 0.2),
+    0 24rpx 50rpx rgba(0, 0, 0, 0.35);
+  
+  transition: background 0.15s ease, -webkit-backdrop-filter 0.15s ease, backdrop-filter 0.15s ease, box-shadow 0.3s ease;
+}
+
+/* 表面倾斜漫反射层 */
+.glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.02) 42%, transparent 60%);
+  opacity: 0.85;
+  z-index: 1;
+}
+
+/* 去掉磨砂时的纯透水晶状态 */
+.glass-card.pure-crystal {
+  /* 当去掉磨砂时，加强微光边缘与通透感，使无模糊时更加晶莹 */
+  border-color: rgba(255, 255, 255, 0.35);
+  box-shadow:
+    inset 2px -2px 3px -1px rgba(255, 255, 255, 1),
+    inset -2px 2px 3px -1px rgba(255, 255, 255, 0.7),
+    inset 0 0 8px rgba(0, 0, 0, 0.1),
+    0 20rpx 45rpx rgba(0, 0, 0, 0.3);
+}
+
+/* 色散模式 (模拟透镜棱镜色散 dispersion) */
+.glass-card.dispersion-on {
+  box-shadow:
+    inset 2px -2px 3px -1px rgba(100, 220, 255, 0.9),
+    inset -2px 2px 3px -1px rgba(255, 120, 180, 0.8),
+    inset 0 0 14px rgba(0, 0, 0, 0.22),
+    0 24rpx 50rpx rgba(0, 0, 0, 0.35);
+}
+
+.card-chip {
+  position: relative;
+  z-index: 2;
+  display: inline-block;
+  padding: 6rpx 18rpx;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999rpx;
+  margin-bottom: 22rpx;
+}
+
+.chip-text {
+  font-size: 21rpx;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.card-body {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 18rpx;
+}
+
+.chat-bubble {
+  background: rgba(0, 0, 0, 0.32);
+  border-radius: 24rpx;
+  padding: 22rpx;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.bubble-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8rpx;
+}
+
+.bubble-sender {
+  font-size: 22rpx;
+  color: #38ef7d;
+  font-weight: 600;
+}
+
+.bubble-badge {
+  font-size: 19rpx;
+  padding: 2rpx 10rpx;
+  background: rgba(56, 239, 125, 0.2);
+  color: #38ef7d;
+  border-radius: 6rpx;
+}
+
+.bubble-text {
+  font-size: 25rpx;
+  color: #ffffff;
+  line-height: 1.5;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10rpx 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.info-row .label {
+  font-size: 23rpx;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.info-row .value {
+  font-size: 23rpx;
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.info-row .value.highlight {
+  color: #38ef7d;
+}
+
+.info-row .value.highlight-warn {
+  color: #00f2fe;
+  font-weight: 600;
+}
+
+/* ================= 核心 2：物理液态胶囊按钮 ================= */
+.section-title {
+  width: 100%;
+  margin-top: 40rpx;
+  margin-bottom: 20rpx;
+  font-size: 25rpx;
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 500;
+  padding-left: 10rpx;
+}
+
+.liquid-capsule-btn {
+  position: relative;
+  width: 100%;
+  height: 110rpx;
+  border-radius: 55rpx;
+  overflow: hidden;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform, box-shadow;
+  touch-action: none;
+
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid rgba(255, 255, 255, 0.32);
+
+  box-shadow:
+    inset 1.5px -1.5px 2px -0.5px rgba(255, 255, 255, 0.95),
+    inset -1.5px 1.5px 2px -0.5px rgba(255, 255, 255, 0.65),
+    inset 0 0 5px rgba(0, 0, 0, 0.15),
+    0 16rpx 36rpx rgba(0, 0, 0, 0.28);
+}
+
+.liquid-capsule-btn.pure-crystal {
+  border-color: rgba(255, 255, 255, 0.45);
+  box-shadow:
+    inset 2px -2px 3px -0.5px rgba(255, 255, 255, 1),
+    inset -2px 2px 3px -0.5px rgba(255, 255, 255, 0.8),
+    0 16rpx 36rpx rgba(0, 0, 0, 0.25);
+}
+
+.btn-shine {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0.05) 50%, transparent 100%);
+  opacity: 0.85;
+}
+
+.btn-inner {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.btn-icon {
+  font-size: 32rpx;
+}
+
+.btn-text {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #ffffff;
+  letter-spacing: 0.5px;
+}
+
+.status-tips {
+  margin-top: 20rpx;
+  text-align: center;
+}
+
+.status-text {
+  font-size: 23rpx;
+  color: #38ef7d;
+  font-family: monospace;
+}
+
+/* 控制按钮 */
+.controls-panel {
+  width: 100%;
+  margin-top: 32rpx;
+}
+
+.control-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 22rpx 30rpx;
+  border-radius: 26rpx;
+}
+
+.ctrl-label {
+  font-size: 25rpx;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.ctrl-state {
+  font-size: 24rpx;
+  color: #38ef7d;
+  font-weight: 600;
+}
+
+/* ================= 长按玻璃菜单浮层 (GlassMenuOverlay) ================= */
+.glass-menu-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.glass-menu-panel {
+  width: 480rpx;
+  border-radius: 36rpx;
+  padding: 12rpx;
+  box-sizing: border-box;
+
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid rgba(255, 255, 255, 0.35);
+
+  box-shadow:
+    inset 1.5px -1.5px 2px -1px rgba(255, 255, 255, 0.95),
+    inset -1.5px 1.5px 2px -1px rgba(255, 255, 255, 0.6),
+    0 24rpx 60rpx rgba(0, 0, 0, 0.5);
+  animation: popIn 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  padding: 24rpx 28rpx;
+  border-radius: 26rpx;
+}
+
+.menu-item:active {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.menu-icon {
+  font-size: 28rpx;
+}
+
+.menu-label {
+  font-size: 28rpx;
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.menu-danger .menu-label,
+.menu-danger .menu-icon {
+  color: #ff5252;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes popIn {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}

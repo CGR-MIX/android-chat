@@ -12,6 +12,13 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateTo
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
@@ -25,46 +32,226 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlin.math.abs
 import kotlinx.coroutines.*
 
+/** Decodes one attachment off the main thread and keeps the failure reason for a retry affordance. */
 @Composable
-fun AttachmentThumbnail(message: Message, vm: ChatViewModel, modifier: Modifier = Modifier) {
+private fun rememberAttachmentBitmap(message: Message, vm: ChatViewModel, maximum: Int, attempt: Int): Pair<Bitmap?, String?> {
     val s by vm.state.collectAsStateWithLifecycle()
-    var attempt by remember(message.id) { mutableIntStateOf(0) }
-    var error by remember(message.id, attempt) { mutableStateOf(false) }
+    var failure by remember(message.id, attempt) { mutableStateOf<String?>(null) }
     val bitmap by produceState<Bitmap?>(null, message.id, message.localAttachment, s.mediaRevision, attempt, s.connected) {
-        try { val file = vm.attachmentFile(message); value = withContext(Dispatchers.IO) { AttachmentFiles.decode(file, 600) }; error = value == null }
-        catch (e: CancellationException) { throw e } catch (_: Exception) { error = true }
+        try {
+            val file = vm.attachmentFile(message)
+            val decoded = withContext(Dispatchers.IO) { AttachmentFiles.decode(file, maximum) }
+            if (decoded == null) failure = "无法解码此图片" else value = decoded
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { failure = e.message ?: "图片加载失败" }
     }
-    Box(modifier.sizeIn(minWidth = 170.dp, maxWidth = 260.dp).height(176.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
-        if (bitmap != null) Image(bitmap!!.asImageBitmap(), message.fileName, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        else if (error) TextButton(onClick = { attempt++ }) { Text("图片未缓存 · 重试") }
-        else CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+    return bitmap to failure
+}
+
+/**
+ * A run of images rendered as one stacked card (4:3 poker-style deck) that can be expanded into
+ * an ordered, original-ratio vertical list. Stacked mode only swipes horizontally, never loops,
+ * and the card that leaves the deck animates back to the bottom.
+ */
+@Composable
+fun ImageStackCard(
+    images: List<Message>, vm: ChatViewModel,
+    onOpen: (Message) -> Unit, onLongPress: (Message) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val count = images.size
+    if (count == 0) return
+    val ids = remember(images) { images.map { it.id } }
+    var expanded by remember(ids) { mutableStateOf(false) }
+
+    if (expanded) {
+        Column(modifier.widthIn(max = 288.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("${images.size} 张图片", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = { expanded = false }) { Text("收起") }
+            }
+            images.forEach { message -> key(message.id) { ExpandedImageRow(message, vm, onOpen, onLongPress) } }
+        }
+        return
+    }
+
+    StackedDeck(images, vm, onOpen, onLongPress, modifier) { expanded = true }
+}
+
+@Composable
+private fun ExpandedImageRow(message: Message, vm: ChatViewModel, onOpen: (Message) -> Unit, onLongPress: (Message) -> Unit) {
+    var attempt by remember(message.id) { mutableIntStateOf(0) }
+    val (bitmap, failure) = rememberAttachmentBitmap(message, vm, maximum = 1200, attempt = attempt)
+    val ratio = bitmap?.takeIf { it.height > 0 }?.let { it.width.toFloat() / it.height }
+        ?.takeIf { it.isFinite() && it > .2f && it < 5f } ?: (4f / 3f)
+    Box(Modifier.fillMaxWidth().aspectRatio(ratio).clip(RoundedCornerShape(14.dp))
+        .background(MaterialTheme.colorScheme.surfaceVariant)
+        .combinedClickable(onClick = { onOpen(message) }, onLongClick = { onLongPress(message) })) {
+        if (bitmap != null) Image(bitmap.asImageBitmap(), message.fileName ?: "图片", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        else if (failure != null) Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("图片未缓存", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = { attempt++ }) { Text("重试") }
+        } else CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
     }
 }
 
 @Composable
-fun ImageSendPreview(uri: Uri, onDismiss: () -> Unit, onSend: (Boolean) -> Unit) {
+private fun StackedDeck(
+    images: List<Message>, vm: ChatViewModel,
+    onOpen: (Message) -> Unit, onLongPress: (Message) -> Unit,
+    modifier: Modifier = Modifier, onExpand: () -> Unit,
+) {
+    val count = images.size
+    val ids = remember(images) { images.map { it.id } }
+    var index by remember(ids) { mutableIntStateOf(0) }
+    val top = images[index.coerceIn(0, count - 1)]
+    var attempt by remember(top.id) { mutableIntStateOf(0) }
+    val (bitmap, failure) = rememberAttachmentBitmap(top, vm, maximum = 960, attempt = attempt)
+    var cardSize by remember { mutableStateOf(IntSize.Zero) }
+    var dragX by remember(top.id) { mutableFloatStateOf(0f) }
+    val sink = remember(top.id) { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+
+    val peek = 9.dp
+    fun settle() {
+        val start = dragX
+        val threshold = (cardSize.width * .24f).coerceAtLeast(64f)
+        scope.launch {
+            if (count > 1 && abs(start) > threshold) {
+                sink.animateTo(1f, tween(180, easing = FastOutSlowInEasing))
+                // Left drag (start < 0) reveals the OLDER image (which peeks on the right);
+                // right drag flips back to the NEWER one. Mirrors the deck layout.
+                index = (index + (if (start < 0f) 1 else -1)).coerceIn(0, count - 1)
+            } else {
+                animate(0f, start, 0f, spring(dampingRatio = .72f, stiffness = 420f)) { value, _ -> dragX = value }
+            }
+            dragX = 0f
+        }
+    }
+
+    Box(modifier.padding(top = peek * 2)) {
+        Box(Modifier.widthIn(max = 288.dp).heightIn(max = 380.dp).aspectRatio(4f / 3f)
+            .onGloballyPositioned { cardSize = it.size }) {
+            // Peek cards on the left and/or right, poker-style. Each shows its own thumbnail content.
+            val leftCount = if (index == 0) 0 else if (index == count - 1) 2 else 1
+            val rightCount = if (index == count - 1) 0 else if (index == 0) 2 else 1
+            for (depth in 1..leftCount) {
+                val queued = images.getOrNull(index - depth) ?: continue
+                key("left-$depth-" + queued.id) {
+                    val (queuedBitmap, _) = rememberAttachmentBitmap(queued, vm, maximum = 480, attempt = 0)
+                    Box(Modifier.matchParentSize().graphicsLayer {
+                        transformOrigin = TransformOrigin(.5f, .5f)
+                        translationX = -(peek * depth).toPx()
+                        rotationZ = -depth * 3f
+                        val scale = 1f - depth * .05f
+                        scaleX = scale; scaleY = scale
+                    }.zIndex(-depth.toFloat()).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                        if (queuedBitmap != null) Image(queuedBitmap.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    }
+                }
+            }
+            for (depth in 1..rightCount) {
+                val queued = images.getOrNull(index + depth) ?: continue
+                key("right-$depth-" + queued.id) {
+                    val (queuedBitmap, _) = rememberAttachmentBitmap(queued, vm, maximum = 480, attempt = 0)
+                    Box(Modifier.matchParentSize().graphicsLayer {
+                        transformOrigin = TransformOrigin(.5f, .5f)
+                        translationX = (peek * depth).toPx()
+                        rotationZ = depth * 3f
+                        val scale = 1f - depth * .05f
+                        scaleX = scale; scaleY = scale
+                    }.zIndex(-depth.toFloat()).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                        if (queuedBitmap != null) Image(queuedBitmap.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    }
+                }
+            }
+            // The held card. It slides horizontally and, on release past the threshold, tucks back
+            // to the bottom of the deck before index advances.
+            Box(Modifier.matchParentSize().zIndex(if (sink.value > 0f) -2f else 0f).graphicsLayer {
+                val remaining = 1f - sink.value
+                translationX = dragX * remaining
+                rotationZ = if (cardSize.width > 0) dragX * remaining / cardSize.width * 8f else 0f
+                val scale = 1f - .08f * sink.value
+                scaleX = scale; scaleY = scale
+            }.clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
+                .then(if (count > 1) Modifier.pointerInput(top.id, count) {
+                    detectHorizontalDragGestures(
+                        // A new drag while the tuck-back animation is still playing would be
+                        // multiplied by `remaining` ≈ 0, i.e. the card would not follow the finger.
+                        // Reset immediately so consecutive swipes stay responsive.
+                        onDragStart = {
+                            dragX = 0f
+                            if (sink.value > 0f) scope.launch { sink.snapTo(0f) }
+                        },
+                        onDragEnd = { settle() },
+                        onDragCancel = { dragX = 0f },
+                    ) { change, amount -> change.consume(); dragX += amount }
+                } else Modifier)
+                .combinedClickable(onClick = { onOpen(top) }, onLongClick = { onLongPress(top) })) {
+                if (bitmap != null) Image(bitmap.asImageBitmap(), top.fileName ?: "图片", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                else if (failure != null) Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("图片未缓存", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { attempt++ }) { Text("重试") }
+                } else CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
+            }
+            if (count > 1) {
+                Text("${index + 1} / $count", Modifier.align(Alignment.TopEnd).padding(8.dp)
+                    .background(Color.Black.copy(alpha = .45f), RoundedCornerShape(50)).padding(horizontal = 9.dp, vertical = 3.dp),
+                    color = Color.White, fontSize = 11.sp)
+                TextButton(onClick = onExpand, modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp)) {
+                    Text("展开", fontSize = 12.sp, color = Color.White, modifier = Modifier.background(Color.Black.copy(alpha = .45f), RoundedCornerShape(50)).padding(horizontal = 8.dp, vertical = 2.dp))
+                }
+            }
+        }
+    }
+}
+
+/** Composer preview for one or more picked images; the compress choice applies to the whole batch. */
+@Composable
+fun ImageSendPreview(uris: List<Uri>, onDismiss: () -> Unit, onSend: (Boolean) -> Unit) {
+    if (uris.isEmpty()) { LaunchedEffect(Unit) { onDismiss() }; return }
     val context = LocalContext.current
-    var original by remember(uri) { mutableStateOf(false) }
-    val mime = remember(uri) { context.contentResolver.getType(uri) }
-    val compressible = mime in setOf("image/jpeg", "image/png", "image/webp")
-    var error by remember(uri) { mutableStateOf(false) }
+    var original by remember(uris) { mutableStateOf(false) }
+    val compressible = remember(uris) { uris.all { context.contentResolver.getType(it) in setOf("image/jpeg", "image/png", "image/webp") } }
+    val pager = rememberPagerState(pageCount = { uris.size })
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(if (uris.size == 1) "发送图片" else "发送 ${uris.size} 张图片") }, text = {
+        Column {
+            Box(Modifier.fillMaxWidth().heightIn(max = 320.dp).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+                HorizontalPager(pager, Modifier.fillMaxWidth()) { page -> ImagePreviewPage(uris[page], Modifier.fillMaxWidth().heightIn(max = 320.dp)) }
+                if (uris.size > 1) Text("${pager.currentPage + 1} / ${uris.size}", Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                    .background(Color.Black.copy(alpha = .5f), RoundedCornerShape(50)).padding(horizontal = 9.dp, vertical = 3.dp), color = Color.White, fontSize = 11.sp)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(original || !compressible, { original = it }, enabled = compressible); Text("原图") }
+            Text(if (original || !compressible) "保持原文件；最大 $MAX_ATTACHMENT_LABEL" else "长边缩至 2048 像素，转为 JPEG（透明区域不保留）", fontSize = 12.sp)
+        }
+    }, confirmButton = { TextButton(onClick = { onSend(original || !compressible) }) { Text("发送") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
+}
+
+@Composable
+private fun ImagePreviewPage(uri: Uri, modifier: Modifier) {
+    val context = LocalContext.current
+    var failure by remember(uri) { mutableStateOf(false) }
     val bitmap by produceState<Bitmap?>(null, uri) {
         value = withContext(Dispatchers.IO) { runCatching {
             if (Build.VERSION.SDK_INT >= 28) {
@@ -74,23 +261,21 @@ fun ImageSendPreview(uri: Uri, onDismiss: () -> Unit, onSend: (Boolean) -> Unit)
                     decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                 }
             } else {
-            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
-            var sample = 1; while (maxOf(options.outWidth, options.outHeight) / sample > 1600) sample *= 2
-            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }
+                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+                var sample = 1; while (maxOf(options.outWidth, options.outHeight) / sample > 1600) sample *= 2
+                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }
             }
-        }.getOrNull() }; error = value == null
+        }.getOrNull() }; failure = value == null
     }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("发送图片") }, text = {
-        Column {
-            bitmap?.let { Image(it.asImageBitmap(), "待发送图片", Modifier.fillMaxWidth().heightIn(max = 340.dp), contentScale = ContentScale.Fit) }
-            if (error) Text("此格式暂不支持预览，可发送原文件")
-            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(original || !compressible, { original = it }, enabled = compressible); Text("原图") }
-            Text(if (original || !compressible) "保持原文件；最大 20 MB" else "长边缩至 2048 像素，转为 JPEG（透明区域不保留）", fontSize = 12.sp)
-        }
-    }, confirmButton = { TextButton(onClick = { onSend(original || !compressible) }) { Text("发送") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
+    Box(modifier, contentAlignment = Alignment.Center) {
+        if (bitmap != null) Image(bitmap!!.asImageBitmap(), "待发送图片", Modifier.fillMaxWidth(), contentScale = ContentScale.Fit)
+        else if (failure) Text("此格式暂不支持预览，可发送原文件", Modifier.padding(16.dp), fontSize = 12.sp)
+        else CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+    }
 }
 
+/** Full-screen viewer: original ratio, pinch zoom, and a pager across the cached room images. */
 @Composable
 fun ImageGallery(images: List<Message>, initialId: String, vm: ChatViewModel, onSave: (Message) -> Unit, onDismiss: () -> Unit) {
     if (images.isEmpty()) { LaunchedEffect(Unit) { onDismiss() }; return }
@@ -125,9 +310,9 @@ fun ImageGallery(images: List<Message>, initialId: String, vm: ChatViewModel, on
             Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().statusBarsPadding().background(Color.Black.copy(alpha = .6f)).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "关闭图片", tint = Color.White) }
                 Text("${pager.currentPage + 1} / ${images.size}", Modifier.weight(1f), color = Color.White)
-                TextButton(onClick = { images.getOrNull(pager.currentPage)?.let(onSave) }) { Text("保存", color = Color.White) }
+                TextButton(onClick = { images.getOrNull(pager.currentPage)?.let(onSave) }) { Text(images.getOrNull(pager.currentPage)?.let { if (vm.savedUriFor(it) != null) "打开" else "保存" } ?: "保存", color = Color.White) }
             }
-            Text("双指缩放 · 双击还原 · 原比例时左右切换", Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(20.dp), color = Color.White, fontSize = 12.sp)
+            Text("原始比例 · 双指缩放 · 双击还原 · 原比例时左右切换", Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(20.dp), color = Color.White, fontSize = 12.sp)
         }
     }
 }
@@ -157,7 +342,7 @@ fun VoiceRecordButton(roomId: String, vm: ChatViewModel, modifier: Modifier = Mo
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it; if (!it) vm.showError("请允许麦克风权限后录制语音") }
     DisposableEffect(roomId) { onDispose { vm.voice.finishRecording(false) } }
     val label = if (!granted) "允许麦克风后录音" else if (state.recording) { if (cancelling) "松开取消" else "${state.seconds}s · 上滑取消" } else "按住说话"
-    Box(modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(18.dp)).background(if (cancelling) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant)
+    Box(modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(24.dp)).background(if (cancelling) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant)
         .semantics { contentDescription = label; onClick(label = "开始或结束录音") {
             if (!granted) permission.launch(Manifest.permission.RECORD_AUDIO)
             else if (state.recording) vm.voice.finishRecording(true) else vm.voice.startRecording(roomId)

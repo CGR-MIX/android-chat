@@ -25,6 +25,9 @@ import org.json.JSONObject
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+/** 一次性打开请求：把附件交给系统默认应用时需要的 URI 与 MIME。 */
+data class AttachmentOpen(val uri: Uri, val mimeType: String)
+
 data class ChatState(
     val server: String = DEFAULT_SERVER, val name: String = "Android 手机", val status: String = "连接中",
     val backgroundNotifications: Boolean = false,
@@ -37,6 +40,10 @@ data class ChatState(
     val messages: List<Message> = emptyList(), val drafts: Map<String, String> = emptyMap(),
     val error: String? = null, val loading: Boolean = false, val hasMore: Boolean = false,
     val transferring: Boolean = false, val notice: String? = null, val reduceTransparency: Boolean = false,
+    val glassOpacity: Float = GLASS_OPACITY,
+    val update: UpdateState = UpdateState.Idle,
+    /** 下载完成后要交给系统默认应用打开的一次性请求；界面消费后清空。 */
+    val openRequest: AttachmentOpen? = null,
 ) {
     val room get() = rooms.firstOrNull { it.id == activeRoomId }
     val draft get() = drafts[activeRoomId].orEmpty()
@@ -47,6 +54,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val client = OkHttpClient.Builder().pingInterval(25, TimeUnit.SECONDS)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).callTimeout(90, TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).build()
+    /** 附件上传/下载不限总时长：只在单次读写卡住（readTimeout）或连接失败时才中断。 */
+    private val transferClient = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).build()
+    /** 更新通道要跟随 GitHub 到对象存储的 302 跳转，因此单独放开重定向且不限总时长。 */
+    private val updateClient = client.newBuilder().followRedirects(true).followSslRedirects(true).callTimeout(0, TimeUnit.SECONDS).build()
+    private val updateChannel = UpdateChannel(updateClient, File(app.cacheDir, "updates"))
+    /** 用户点开一个还没下载的附件时记下的意图：接收完成后立刻用系统默认应用打开。 */
+    private var pendingOpenId: String? = null
     private val mutable = MutableStateFlow(ChatState(
         server = prefs.getString("server", DEFAULT_SERVER)!!,
         name = prefs.getString("name", Build.MODEL)!!,
@@ -71,6 +85,50 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         mutable.update { it.copy(backgroundNotifications = enabled) }
         ChatConnectionService.keepConnected(getApplication(), enabled)
     }
+
+    /**
+     * 检查更新：版本来源是 git 仓库的版本 tag，不经过自建更新服务；失败只改状态文案，
+     * 不打断聊天与后台连接。
+     */
+    fun checkForUpdate() {
+        if (state.value.update is UpdateState.Checking) return
+        mutable.update { it.copy(update = UpdateState.Checking) }
+        scope.launch {
+            val result = runCatching { updateChannel.check() }
+            mutable.update { current ->
+                current.copy(update = result.fold(
+                    onSuccess = { release ->
+                        when {
+                            release == null -> UpdateState.Failed("仓库里还没有版本 tag")
+                            isUpdateAvailable(BuildConfig.VERSION_NAME, release.version) -> UpdateState.Available(release)
+                            else -> UpdateState.Current(release.tag)
+                        }
+                    },
+                    onFailure = { UpdateState.Failed(it.message ?: "检查更新失败") },
+                ))
+            }
+        }
+    }
+
+    /** 下载更新包：先试 tag 的 Release 附件，再回退到 tag 内提交的产物；进度写回状态。 */
+    fun downloadUpdate() {
+        val release = (state.value.update as? UpdateState.Available)?.release ?: return
+        mutable.update { it.copy(update = UpdateState.Downloading(release, 0L, 0L)) }
+        scope.launch {
+            val result = runCatching {
+                updateChannel.download(release) { received, total ->
+                    mutable.update { it.copy(update = UpdateState.Downloading(release, received, total)) }
+                }
+            }
+            mutable.update { current ->
+                current.copy(update = result.fold(
+                    onSuccess = { file -> UpdateState.Ready(release, file) },
+                    onFailure = { UpdateState.Failed(it.message ?: "更新包下载失败") },
+                ))
+            }
+        }
+    }
+
     private val auth = MutableStateFlow("")
     private var scope = newScope()
     private var socket: WebSocket? = null
@@ -97,7 +155,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val sendJobs = mutableMapOf<String, Job>()
     private val uploads = Mutex()
     private val mediaLock = Mutex()
-    private var stagingJob: Job? = null
+    private var batchJob: Job? = null
+    private suspend fun stageOne(uri: Uri, roomId: String, original: Boolean, position: Int, total: Int) {
+        val id = UUID.randomUUID().toString()
+        val file = local.pendingFile(id)
+        var persisted = false
+        mutable.update { it.copy(uploadProgress = TransferProgress(id, roomId, if (total > 1) "附件 $position/$total" else "附件", phase = "准备附件")) }
+        try {
+            val (name, mime) = AttachmentFiles.stage(getApplication(), uri, file, original) { bytes, expected ->
+                mutable.update { it.copy(uploadProgress = it.uploadProgress?.takeIf { p -> p.id == id }?.copy(received = bytes, total = expected)) }
+            }
+            val message = Message(id, roomId, state.value.selfId, state.value.name, "", Instant.now().toString(), Delivery.Queued, name, mime, file.length(), true)
+            currentCoroutineContext().ensureActive()
+            withContext(NonCancellable) { local.save(message).await(); putMessage(message); persisted = true }
+            if (state.value.connected) enqueue(message)
+        } catch (e: CancellationException) { if (!persisted) file.delete(); throw e }
+        catch (e: Exception) { if (!persisted) file.delete(); showError(e.message ?: "无法准备附件") }
+    }
     private var searchQuery = ""
     private var unreadBoundary = ""
 
@@ -179,10 +253,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (!clearingCache) s.files.forEach { local.save(it) }
                 if (!uiVisible && state.value.backgroundNotifications) newMessages.filterNot { state.value.preferences[it.first]?.muted == true }.forEach { (id, _) -> s.rooms.firstOrNull { it.id == id }?.let(notifications::message) }
                 // The server intentionally leaves historyTexts empty; text pages are fetched separately.
-                if (!clearingCache) cache.keys.toList().forEach { roomId ->
-                    cache[roomId] = mergeMessages(cache[roomId].orEmpty(), s.files.filter { it.roomId == roomId }, recalled)
+                if (!clearingCache) {
+                    val serverFileIds = s.files.map { it.id }.toSet()
+                    cache.keys.toList().forEach { roomId ->
+                        // Snapshot's historyFiles is authoritative: a server-side recall (or prune)
+                        // removes the record, so any local Delivery.Sent file missing from it is gone.
+                        cache[roomId] = mergeMessages(cache[roomId].orEmpty(), s.files.filter { it.roomId == roomId }, recalled)
+                            .filterNot { it.fileName != null && it.delivery == Delivery.Sent && it.roomId in s.rooms.map { r -> r.id } && it.id !in serverFileIds }
+                        cache[roomId].orEmpty().filter { it.fileName != null && it.delivery == Delivery.Sent && it.roomId in s.rooms.map { r -> r.id } && it.id !in serverFileIds }
+                            .forEach { local.remove(it.id, true); recalled.add(it.id) }
+                    }
+                    s.files.groupBy { it.roomId }.forEach { (id, files) -> cache[id] = mergeMessages(cache[id].orEmpty(), files, recalled) }
                 }
-                if (!clearingCache) s.files.groupBy { it.roomId }.forEach { (id, files) -> cache[id] = mergeMessages(cache[id].orEmpty(), files, recalled) }
                 val active = state.value.activeRoomId
                 updateUnread(p)
                 cache.values.flatten().filter { it.delivery == Delivery.Queued && it.roomId in s.rooms.filter { r -> r.joined(s.selfId) }.map { r -> r.id } }.forEach(::enqueue)
@@ -224,9 +306,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val savedDraft = prefs.getString("draft:" + address.http + ":" + id, "").orEmpty()
         mutable.update { it.copy(activeRoomId = id, messages = cache[id].orEmpty(), drafts = it.drafts + (id to (it.drafts[id] ?: savedDraft)), hasMore = cursors[id] != null, firstUnreadId = null, jumpMessageId = null) }
         publishMessages(id)
-        if (state.value.connected && id in liveRoomIds && room?.joined(state.value.selfId) == true) refresh(id)
+        if (state.value.connected && id in liveRoomIds && room?.joined(state.value.selfId) == true) { refresh(id); scope.launch { syncRecalled(id) } }
     }
     fun back() { voice.stop(); refreshJob?.cancel(); mutable.update { it.copy(activeRoomId = null, loading = false) } }
+    /** Copies the message text (or file name) to the clipboard from the glass long-press menu. */
+    fun copyMessage(message: Message) {
+        val text = message.fileName ?: message.text
+        if (text.isBlank()) return
+        val clipboard = getApplication<Application>().getSystemService(android.content.ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("点点直连", text))
+        mutable.update { it.copy(notice = "已复制") }
+    }
     fun draft(text: String) {
         val room = state.value.activeRoomId ?: return
         mutable.update { it.copy(drafts = it.drafts + (room to text)) }
@@ -294,7 +384,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                 }
                                 try {
                                     val url = address.api("api/history/upload").newBuilder().addQueryParameter("roomId", item.roomId).addQueryParameter("historyId", item.id).build()
-                                    val result = json(url, "POST", body, mapOf("x-file-name" to URLEncoder.encode(item.fileName, "UTF-8").replace("+", "%20"), "x-file-created-at" to item.createdAt))
+                                    val result = json(url, "POST", body, mapOf("x-file-name" to URLEncoder.encode(item.fileName, "UTF-8").replace("+", "%20"), "x-file-created-at" to item.createdAt), longRunning = true)
                                     val sent = parseMessage(result.getJSONObject("file"), true)
                                     withContext(Dispatchers.IO) { if (file.exists()) file.copyTo(local.mediaFile(sent.id), overwrite = true) }
                                     putMessage(sent); local.flush(); withContext(Dispatchers.IO) { file.delete() }
@@ -361,6 +451,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // A live latest-page refresh must not overwrite the cursor for older loaded pages.
                 if (older || !cursors.containsKey(id) || historyGap) cursors[id] = if (page.hasMore) page.cursor else null
                 publishMessages(id)
+                syncRecalled(id)
                 if (state.value.activeRoomId == id) mutable.update { it.copy(hasMore = cursors[id] != null) }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { showError(e.message ?: "加载消息失败") }
@@ -380,27 +471,90 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             catch (e: Exception) { showError(e.message ?: "撤回失败") }
         }
     }
-    fun upload(uri: Uri, roomId: String, original: Boolean = true) {
-        val room = state.value.rooms.firstOrNull { it.id == roomId } ?: return
-        if (stagingJob?.isActive == true || state.value.transferring || roomId in state.value.archivedRoomIds || !room.joined(state.value.selfId)) return
-        val id = UUID.randomUUID().toString()
-        stagingJob = scope.launch {
-            val file = local.pendingFile(id)
-            var persisted = false
-            mutable.update { it.copy(transferring = true, uploadProgress = TransferProgress(id, roomId, "附件", phase = "准备附件")) }
-            try {
-                val (name, mime) = AttachmentFiles.stage(getApplication(), uri, file, original) { bytes, total ->
-                    mutable.update { it.copy(uploadProgress = it.uploadProgress?.copy(received = bytes, total = total)) }
+    private suspend fun syncRecalled(roomId: String) {
+        if (!state.value.connected || roomId !in liveRoomIds) return
+        try {
+            val response = json(address.api("api/history/recalled").newBuilder().addQueryParameter("roomId", roomId).build())
+            val recalledList = response.optJSONArray("recalled")
+            if (recalledList == null) return
+            for (index in 0 until recalledList.length()) {
+                val id = recalledList.optJSONObject(index)?.optString("historyId") ?: continue
+                if (id.isBlank()) continue
+                recalled.add(id)
+                local.remove(id, true)
+                if (cache[roomId].orEmpty().any { it.id == id }) {
+                    cache[roomId] = cache[roomId].orEmpty().filterNot { it.id == id }
                 }
-                val message = Message(id, roomId, state.value.selfId, state.value.name, "", Instant.now().toString(), Delivery.Queued, name, mime, file.length(), true)
-                ensureActive()
-                withContext(NonCancellable) { local.save(message).await(); putMessage(message); persisted = true }
-                if (state.value.connected) enqueue(message)
-            } catch (e: CancellationException) { if (!persisted) file.delete(); throw e }
-            catch (e: Exception) { if (!persisted) file.delete(); showError(e.message ?: "无法准备附件") }
-            finally { mutable.update { it.copy(transferring = false, uploadProgress = null) } }
+            }
+            publishMessages(roomId)
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { }
+    }
+
+    fun savedUriFor(message: Message): Uri? {
+        if (message.fileName == null) return null
+        return prefs.getString(savedKey(message), null)?.let(Uri::parse)
+    }
+
+    fun markSaved(message: Message, uri: Uri) {
+        if (message.fileName == null) return
+        prefs.edit().putString(savedKey(message), uri.toString()).apply()
+        // 这次接收如果是用户点开触发的，落盘后立刻交给系统默认应用打开。
+        if (pendingOpenId == message.id) signalOpen(message, uri)
+    }
+
+    private fun savedKey(message: Message) = "saved:" + address.http + ":" + message.id
+
+    fun saveAttachment(message: Message) {
+        if (message.fileName == null) return
+        val existing = savedUriFor(message)
+        if (existing != null) {
+            // 已经在本机（含上一次接收）：点开时不再重复下载。
+            if (pendingOpenId == message.id) signalOpen(message, existing)
+            return
+        }
+        // 保留打开意图：重复点同一条正在接收的附件时，接收完成后仍然会打开它。
+        if (state.value.downloadProgress != null) { showError("请先完成或取消当前接收"); return }
+        scope.launch(Dispatchers.IO) {
+            try {
+                val destination = AttachmentFiles.defaultDownloadDestination(getApplication(), message.fileName!!)
+                withContext(Dispatchers.Main.immediate) { download(message, destination) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { pendingOpenId = null; showError(e.message ?: "无法保存附件") }
         }
     }
+
+    /** 用户点开还没下载的附件：先记下意图，接收完成后由 [markSaved] 交给系统默认应用打开。 */
+    fun expectOpenAfterDownload(message: Message) { pendingOpenId = message.id }
+
+    /** 界面已经处理完这次打开请求。 */
+    fun consumeOpenRequest() { if (state.value.openRequest != null) mutable.update { it.copy(openRequest = null) } }
+
+    /** 附件已在本机：把打开请求交给界面，由界面拉起系统默认应用。 */
+    private fun signalOpen(message: Message, uri: Uri) {
+        pendingOpenId = null
+        mutable.update { it.copy(openRequest = AttachmentOpen(uri, message.mimeType)) }
+    }
+
+    /** Stages and queues one or more picked attachments. A batch is sent in order, one at a time. */
+    fun uploadAll(uris: List<Uri>, roomId: String, original: Boolean = true) {
+        val room = state.value.rooms.firstOrNull { it.id == roomId } ?: return
+        if (uris.isEmpty() || batchJob?.isActive == true) return
+        if (state.value.transferring || roomId in state.value.archivedRoomIds || !room.joined(state.value.selfId)) return
+        val accepted = uris.take(MAX_BATCH_ATTACHMENTS)
+        if (uris.size > accepted.size) showError("一次最多选择 $MAX_BATCH_ATTACHMENTS 个附件，已发送前 ${accepted.size} 个")
+        batchJob = scope.launch {
+            mutable.update { it.copy(transferring = true) }
+            try {
+                accepted.forEachIndexed { index, uri -> stageOne(uri, roomId, original, index + 1, accepted.size) }
+            } finally {
+                mutable.update { it.copy(transferring = false, uploadProgress = null) }
+            }
+        }
+    }
+
+    /** Single-attachment entry point kept for callers that only have one uri. */
+    fun upload(uri: Uri, roomId: String, original: Boolean = true) = uploadAll(listOf(uri), roomId, original)
     fun sendVoice(file: File, roomId: String, duration: Int) {
         val id = UUID.randomUUID().toString()
         scope.launch {
@@ -413,13 +567,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) { showError(e.message ?: "语音保存失败") }
         }
     }
+
     fun cancelUpload() {
         val p = state.value.uploadProgress ?: return
-        if (p.phase == "准备附件") stagingJob?.cancel()
+        // Cancelling a staged batch stops the remaining files; finished ones keep their own retry entry.
+        if (p.phase == "准备附件") batchJob?.cancel()
         else cache[p.roomId].orEmpty().firstOrNull { it.id == p.id }?.let { message ->
             sendJobs[p.id]?.cancel(); putMessage(message.copy(delivery = Delivery.Failed))
         }
     }
+
     suspend fun attachmentFile(message: Message): File = mediaLock.withLock {
         withContext(Dispatchers.IO) {
             require(message.id !in recalled) { "附件已撤回" }
@@ -429,11 +586,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             require(state.value.connected) { "附件尚未缓存，请联网后重试" }
             val part = File(local.mediaDir, cacheKey(message.id) + ".part")
             try {
-                authorized(address.api("api/history/download/" + message.id)).useCancellable { response ->
+                authorized(address.api("api/history/download/" + message.id), longRunning = true).useCancellable { response ->
                     checkResponse(response)
                     response.body!!.byteStream().use { input -> part.outputStream().use { output ->
                         val buffer = ByteArray(65536); var total = 0L
-                        while (true) { ensureActive(); val n = input.read(buffer); if (n < 0) break; total += n; require(total <= MAX_ATTACHMENT_BYTES) { "附件超过大小限制" }; output.write(buffer, 0, n) }
+                        while (true) { ensureActive(); val n = input.read(buffer); if (n < 0) break; total += n; require(total <= MAX_ATTACHMENT_BYTES) { "附件超过大小限制（$MAX_ATTACHMENT_LABEL）" }; output.write(buffer, 0, n) }
                     } }
                 }
                 require(message.id !in recalled) { "附件已撤回" }
@@ -442,6 +599,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } finally { part.delete() }
         }
     }
+
     fun download(message: Message, destination: Uri) {
         if (state.value.downloadProgress != null) { showError("请先完成或取消当前接收"); return }
         val id = UUID.randomUUID().toString()
@@ -449,7 +607,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         try { AttachmentTransferService.start(getApplication(), message, destination, id) }
         catch (e: Exception) { downloadChanged(null); showError(e.message ?: "无法启动附件接收") }
     }
-    fun downloadChanged(progress: TransferProgress?) { mutable.update { it.copy(downloadProgress = progress) } }
+
+    fun downloadChanged(progress: TransferProgress?) {
+        // 接收结束还没被消费，说明这次下载失败或被取消，丢掉打开意图，避免以后误开。
+        if (progress == null) pendingOpenId = null
+        mutable.update { it.copy(downloadProgress = progress) }
+    }
     fun cancelDownload() { state.value.downloadProgress?.let { AttachmentTransferService.cancel(getApplication(), it.id) } }
     suspend fun receiveAttachment(message: Message, destination: Uri, onProgress: suspend (Long, Long) -> Unit) = withContext(Dispatchers.IO) {
         require(message.id !in recalled) { "附件已撤回" }
@@ -463,21 +626,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 require(expected < 0 || received == expected) { "附件未完整接收，请重试" }
             } ?: error("无法写入选择的位置")
         }
+
         if (cached.exists()) cached.inputStream().use { copy(it, cached.length()) }
         else {
             require(state.value.connected) { "请联网后接收此附件" }
-            authorized(address.api("api/history/download/" + message.id)).use { response ->
+            authorized(address.api("api/history/download/" + message.id), longRunning = true).use { response ->
                 checkResponse(response); val body = response.body ?: error("附件为空")
                 body.byteStream().use { copy(it, body.contentLength()) }
             }
         }
     }
+
     fun roomPreference(id: String, pinned: Boolean? = null, muted: Boolean? = null) {
         val old = state.value.preferences[id] ?: RoomPreference()
         val updated = state.value.preferences + (id to old.copy(pinned = pinned ?: old.pinned, muted = muted ?: old.muted))
         mutable.update { it.copy(preferences = updated) }; local.savePreferences(updated)
         if (pinned != null && state.value.connected) command("update-room-state", JSONObject().put("roomId", id).put("pinned", pinned))
     }
+
     fun markVisibleRead(id: String, latest: String) {
         if (!uiVisible || state.value.activeRoomId != id || latest.isBlank()) return
         val old = state.value.preferences[id] ?: RoomPreference()
@@ -486,12 +652,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         mutable.update { it.copy(preferences = next, unread = it.unread + (id to 0)) }; local.savePreferences(next)
         if (state.value.connected && id in liveRoomIds) command("update-room-state", JSONObject().put("roomId", id).put("lastReadAt", latest))
     }
+
     private fun updateUnread(raw: JSONObject) {
         val preferences = state.value.preferences.toMutableMap()
         raw.optJSONArray("rooms").objects().forEach { room ->
             val id = room.getString("roomId")
             if (id !in preferences) preferences[id] = RoomPreference(readAt = room.optString("historyTextLatestAt").ifBlank { raw.optString("serverTime").ifBlank { Instant.now().toString() } })
         }
+
         val unread = state.value.rooms.associate { room ->
             val boundary = preferences[room.id]?.readAt.orEmpty()
             val count = cache[room.id].orEmpty().count { it.delivery == Delivery.Sent && it.senderId != state.value.selfId && it.createdAt > boundary }
@@ -499,14 +667,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val more = summary?.optString("historyTextLatestAt").orEmpty() > boundary && summary?.optString("historyTextLatestSourceDeviceId") != state.value.selfId
             room.id to if (!room.joined(state.value.selfId)) 0 else maxOf(count, if (more) 1 else 0)
         }
+
         mutable.update { it.copy(preferences = preferences, unread = unread) }; local.savePreferences(preferences)
     }
+
     fun searchMessages(query: String) {
         searchQuery = query
         mutable.update { it.copy(searchResults = if (query.isBlank()) emptyList() else cache.values.flatten().filter { m ->
             m.id !in recalled && (m.text.contains(query, true) || m.fileName?.contains(query, true) == true)
         }.sortedByDescending { m -> m.createdAt }.take(100)) }
     }
+
     fun openSearchResult(message: Message) { openRoom(message.roomId); mutable.update { it.copy(jumpMessageId = message.id) } }
     fun clearCache() {
         if (state.value.transferring || state.value.downloadProgress != null) { showError("传输完成后再清理缓存"); return }
@@ -521,17 +692,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             finally { clearingCache = false }
         }
     }
-    private suspend fun json(url: HttpUrl, method: String = "GET", body: RequestBody? = null, headers: Map<String, String> = emptyMap()): JSONObject =
-        authorized(url, method, body, headers).use { response ->
+
+    private suspend fun json(url: HttpUrl, method: String = "GET", body: RequestBody? = null, headers: Map<String, String> = emptyMap(), longRunning: Boolean = false): JSONObject =
+        authorized(url, method, body, headers, longRunning).use { response ->
             withContext(Dispatchers.IO) { checkResponse(response); JSONObject(response.body?.string().orEmpty().ifBlank { "{}" }) }
         }
-    private suspend fun authorized(url: HttpUrl, method: String = "GET", body: RequestBody? = null, headers: Map<String, String> = emptyMap()): Response {
+
+    private suspend fun authorized(url: HttpUrl, method: String = "GET", body: RequestBody? = null, headers: Map<String, String> = emptyMap(), longRunning: Boolean = false): Response {
         val token = withTimeout(20_000) { auth.first { it.isNotEmpty() } }
         suspend fun call(token: String): Response {
             val request = Request.Builder().url(url).header("Authorization", "Bearer " + token).method(method, body)
             headers.forEach { (k, v) -> request.header(k, v) }
-            return client.newCall(request.build()).await()
+            return (if (longRunning) transferClient else client).newCall(request.build()).await()
         }
+
         val response = call(token)
         if (response.code != 401) return response
         response.close()
@@ -539,14 +713,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (auth.value == token) { mutable.update { it.copy(connected = false) }; connect() }
             withTimeout(20_000) { auth.first { it.isNotEmpty() && it != token } }
         }
+
         return call(auth.value)
     }
+
     private fun checkResponse(response: Response) {
         if (!response.isSuccessful) {
             val error = runCatching { JSONObject(response.body?.string().orEmpty()).optString("error") }.getOrNull()
             throw IOException("请求失败 (" + response.code + ")：" + (error?.take(220)?.ifBlank { "服务暂不可用" } ?: "服务暂不可用"))
         }
     }
+
     fun settings(name: String, reduce: Boolean) {
         if (name.trim().isEmpty()) { showError("请填写设备名称"); return }
         // The connection configuration is intentionally not editable from the settings screen.
@@ -554,17 +731,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         mutable.update { it.copy(name = name.trim(), reduceTransparency = reduce, notice = "设置已保存") }
         if (state.value.connected) command("update-settings", JSONObject().put("deviceName", name.trim())) else connect()
     }
+
+    fun showNotice(message: String) { mutable.update { it.copy(notice = message) } }
     fun showError(message: String) { mutable.update { it.copy(error = message) } }
     fun clearNotice() { mutable.update { it.copy(error = null, notice = null) } }
     override fun onCleared() { voice.stop(); calls.dispose(); local.close(); stopped = true; socketVersion++; socket?.close(1000, "App closed"); scope.cancel(); client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown(); super.onCleared() }
 }
+
 private suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
-    continuation.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) { if (continuation.isActive) continuation.resumeWithException(e) }
-        override fun onResponse(call: Call, response: Response) { continuation.resume(response, onCancellation = { _, value, _ -> value.close() }) }
+        override fun onResponse(call: Call, response: Response) {
+            continuation.resume(response) { _, value, _ ->
+                value.close()
+                cancel()
+            }
+        }
     })
 }
+
+
 
 
 /** Closing the response unblocks a stalled network read when the transfer is cancelled. */

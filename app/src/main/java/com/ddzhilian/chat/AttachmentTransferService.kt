@@ -64,6 +64,8 @@ class AttachmentTransferService : Service() {
                         if (now - lastNotification >= 500) { lastNotification = now; if (app.notifications.enabled()) manager.notify(ID, notification(next, true)) }
                     }
                 }
+                AttachmentFiles.finishPending(this@AttachmentTransferService, destination)
+                app.chat.markSaved(message, destination)
             } catch (e: CancellationException) { terminal = "已取消接收"; removePartial(destination) }
             catch (e: Exception) { terminal = "接收失败"; removePartial(destination); app.chat.showError(e.message ?: terminal) }
             finally {
@@ -86,7 +88,7 @@ class AttachmentTransferService : Service() {
             .setData(Uri.parse("ddchat://transfer/${p.id}" )).putExtra("roomId", p.roomId)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val builder = NotificationCompat.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(p.phase + " · " + p.name.take(48)).setContentText(if (active) "${p.percent?.let { "$it% · " }.orEmpty()}${p.detail}" else if (p.phase == "接收完成") "已保存到选择的位置" else "点击返回聊天")
+            .setContentTitle(p.phase + " · " + p.name.take(48)).setContentText(if (active) "${p.percent?.let { "$it% · " }.orEmpty()}${p.detail}" else if (p.phase == "接收完成") "已保存到 Downloads/点点直连" else "点击返回聊天")
             .setSubText("附件接收").setContentIntent(open).setOnlyAlertOnce(true).setOngoing(active)
             .setAutoCancel(!active).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setCategory(NotificationCompat.CATEGORY_PROGRESS)
         if (active) {
@@ -94,6 +96,7 @@ class AttachmentTransferService : Service() {
                 .setData(Uri.parse("ddchat://cancel-transfer/${p.id}" )).putExtra("transferId", p.id), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             builder.setProgress(100, p.percent ?: 0, p.percent == null).addAction(0, "取消接收", cancel)
             // Public Android API only. OEM decides promotion/Now Bar/island eligibility.
+            if (Build.VERSION.SDK_INT >= 36) builder.setRequestPromotedOngoing(true).setShortCriticalText(p.percent?.let { "$it%" } ?: "接收中")
             if (Build.VERSION.SDK_INT >= 36) builder.setRequestPromotedOngoing(true).setShortCriticalText(p.percent?.let { "$it%" } ?: "接收中")
         }
         val ordinary = builder.build()

@@ -1,0 +1,207 @@
+<wxs module="liquid">
+var startX = 0;
+var startY = 0;
+var isDown = false;
+
+function touchStart(e, ins) {
+  var touch = e.touches[0];
+  startX = touch.clientX;
+  startY = touch.clientY;
+  isDown = true;
+  ins.setStyle({
+    'transform': 'scale(0.96)',
+    'box-shadow': 'inset 2px -2px 3px -1px rgba(255, 255, 255, 0.95), inset -2px 2px 3px -1px rgba(255, 255, 255, 0.75), inset 0 0 10px rgba(0, 0, 0, 0.3), 0 8px 16px rgba(0, 0, 0, 0.25)',
+    'transition': 'transform 0.1s ease-out, box-shadow 0.1s ease-out'
+  });
+}
+
+function touchMove(e, ins) {
+  if (!isDown) return;
+  var touch = e.touches[0];
+  var dx = touch.clientX - startX;
+  var dy = touch.clientY - startY;
+
+  // 物理阻尼与拉伸计算 (类似 Compose 中的 tanh 阻尼)
+  var maxOffset = 30;
+  var moveX = (dx * 0.18);
+  var moveY = (dy * 0.18);
+  if (moveX > maxOffset) moveX = maxOffset;
+  if (moveX < -maxOffset) moveX = -maxOffset;
+  if (moveY > maxOffset) moveY = maxOffset;
+  if (moveY < -maxOffset) moveY = -maxOffset;
+
+  var stretchX = 1 + Math.min(Math.abs(dx) / 400, 0.08);
+  var stretchY = 1 + Math.min(Math.abs(dy) / 400, 0.08);
+
+  ins.setStyle({
+    'transform': 'translate(' + moveX + 'px, ' + moveY + 'px) scale(' + stretchX + ', ' + stretchY + ')',
+    'transition': 'none'
+  });
+}
+
+function touchEnd(e, ins) {
+  isDown = false;
+  ins.setStyle({
+    'transform': 'translate(0px, 0px) scale(1)',
+    'box-shadow': 'inset 1.5px -1.5px 2px -0.5px rgba(255, 255, 255, 0.9), inset -1.5px 1.5px 2px -0.5px rgba(255, 255, 255, 0.6), inset 0 0 4px rgba(0, 0, 0, 0.15), 0 16rpx 36rpx rgba(0, 0, 0, 0.28)',
+    'transition': 'transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.3s ease'
+  });
+}
+
+module.exports = {
+  touchStart: touchStart,
+  touchMove: touchMove,
+  touchEnd: touchEnd
+};
+</wxs>
+
+<!-- 动态注入玻璃物理参数 -->
+<view class="stage" style="--glass-blur: {{blur}}px; --glass-bg: rgba(255, 255, 255, {{bgAlpha}}); --glass-saturate: {{saturate}}%;">
+  <!-- 背景动态彩色流体球：用于衬托透光与折射 -->
+  <view class="blob blob-1"></view>
+  <view class="blob blob-2"></view>
+  <view class="blob blob-3"></view>
+
+  <!-- 背景穿透对比文字：用以测试无磨砂时的清晰透光度 -->
+  <view class="under-glass-watermark">
+    <text class="watermark-line">CRYSTAL CLEAR GLASS</text>
+    <text class="watermark-line">SHARP BACKGROUND LAYER</text>
+    <text class="watermark-line">OPTICAL FRESNEL TEST</text>
+  </view>
+
+  <view class="content-scroll">
+    <!-- 标头与信息面板 -->
+    <view class="header-box">
+      <view class="badge-row">
+        <text class="badge">Research & Prototype</text>
+        <text class="badge {{noFrostMode ? 'badge-active' : ''}}" bindtap="toggleNoFrost">
+          {{noFrostMode ? '已去除磨砂 (纯透水晶)' : '磨砂雾化生效中'}}
+        </text>
+      </view>
+      <text class="title">微信小程序液态玻璃</text>
+      <text class="desc">磨砂 (Blur) 与透明度 (Opacity) 双向动态联动引擎</text>
+    </view>
+
+    <!-- 核心控制器：透明度与磨砂联动滑块面板 -->
+    <view class="glass-control-dock">
+      <view class="dock-header">
+        <text class="dock-title">双向联动控制条</text>
+        <view class="dock-tags">
+          <text class="tag-item">Blur: {{blur}}px</text>
+          <text class="tag-item">Alpha: {{bgAlpha}}</text>
+        </view>
+      </view>
+
+      <view class="slider-container">
+        <slider 
+          min="0" 
+          max="100" 
+          value="{{sliderValue}}" 
+          bindchanging="onSliderChanging" 
+          bindchange="onSliderChange"
+          activeColor="#38ef7d" 
+          backgroundColor="rgba(255, 255, 255, 0.15)" 
+          block-size="22" 
+          block-color="#ffffff"
+        />
+      </view>
+
+      <view class="dock-footer">
+        <text class="sub-tip {{noFrostMode ? 'tip-highlight' : ''}}">
+          {{noFrostMode ? '● 当前为「纯透水晶玻璃」模式（Blur=0，背后文字锐利清晰）' : '● 滑动滑块：磨砂度随透明度按平方曲线 (frosted²) 同步增减'}}
+        </text>
+        <button class="mini-toggle-btn {{noFrostMode ? 'btn-active' : ''}}" bindtap="toggleNoFrost">
+          {{noFrostMode ? '开启磨砂' : '去掉磨砂'}}
+        </button>
+      </view>
+    </view>
+
+    <!-- 卡片 1: 拟真玻璃展示卡 (支持长按弹出玻璃菜单) -->
+    <view 
+      class="glass-card {{dispersion ? 'dispersion-on' : ''}} {{noFrostMode ? 'pure-crystal' : ''}}"
+      bindlongpress="onLongPressCard"
+    >
+      <view class="card-chip">
+        <text class="chip-text">{{noFrostMode ? '纯透水晶模式 (长按卡片弹出菜单)' : '磨砂透光模式 (长按卡片弹出菜单)'}}</text>
+      </view>
+
+      <view class="card-body">
+        <view class="chat-bubble">
+          <view class="bubble-header">
+            <text class="bubble-sender">AI Assistant</text>
+            <text class="bubble-badge">{{noFrostMode ? '无磨砂·纯透' : '磨砂·透光'}}</text>
+          </view>
+          <text class="bubble-text">“去掉磨砂时，背景文字 100% 锐利穿透；依靠双层内高光与斜向菲涅尔反光，依然拥有极为厚重的玻璃立体感。”</text>
+        </view>
+
+        <view class="info-row">
+          <text class="label">磨砂模糊半径 (Blur)：</text>
+          <text class="value {{noFrostMode ? 'highlight-warn' : 'highlight'}}">{{blur}} px {{noFrostMode ? '(已完全去掉)' : ''}}</text>
+        </view>
+        <view class="info-row">
+          <text class="label">背景底色半透 (Alpha)：</text>
+          <text class="value highlight">{{bgAlpha}} ({{sliderValue}}%)</text>
+        </view>
+        <view class="info-row">
+          <text class="label">色彩鲜艳度 (Saturate)：</text>
+          <text class="value">{{saturate}}%</text>
+        </view>
+        <view class="info-row">
+          <text class="label">物理反射高光：</text>
+          <text class="value highlight">各向异性菲涅尔双内阴影</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 交互体验区 -->
+    <view class="section-title">
+      <text>交互体验 (WXS 视图层直驱)</text>
+    </view>
+
+    <!-- 液态弹性胶囊按钮 -->
+    <view 
+      class="liquid-capsule-btn {{dispersion ? 'dispersion-on' : ''}} {{noFrostMode ? 'pure-crystal' : ''}}"
+      catchtouchstart="{{liquid.touchStart}}"
+      catchtouchmove="{{liquid.touchMove}}"
+      catchtouchend="{{liquid.touchEnd}}"
+      catchtouchcancel="{{liquid.touchEnd}}"
+      bindtap="onButtonClick"
+    >
+      <view class="btn-shine"></view>
+      <view class="btn-inner">
+        <text class="btn-icon">⚡</text>
+        <text class="btn-text">按住并拖拽感受液态形变</text>
+      </view>
+    </view>
+
+    <view class="status-tips">
+      <text class="status-text">{{statusText}}</text>
+    </view>
+
+    <!-- 功能开关面板 -->
+    <view class="controls-panel">
+      <view class="control-btn" bindtap="toggleDispersion">
+        <text class="ctrl-label">棱镜色散高光 (Dispersion)</text>
+        <text class="ctrl-state">{{dispersion ? '已开启' : '已关闭'}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 长按弹出的浮层玻璃菜单 (模拟 GlassMenuOverlay) -->
+  <view class="glass-menu-mask" wx:if="{{showGlassMenu}}" bindtap="closeGlassMenu">
+    <view class="glass-menu-panel {{noFrostMode ? 'pure-crystal' : ''}}" catchtap>
+      <view class="menu-item" bindtap="toggleNoFrost">
+        <text class="menu-icon">💧</text>
+        <text class="menu-label">{{noFrostMode ? '开启磨砂雾化' : '一键去除磨砂'}}</text>
+      </view>
+      <view class="menu-item" bindtap="toggleDispersion">
+        <text class="menu-icon">🌈</text>
+        <text class="menu-label">切换色散高光</text>
+      </view>
+      <view class="menu-item menu-danger" bindtap="closeGlassMenu">
+        <text class="menu-icon">✕</text>
+        <text class="menu-label">关闭菜单</text>
+      </view>
+    </view>
+  </view>
+</view>

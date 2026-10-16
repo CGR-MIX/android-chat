@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>微信小程序液态玻璃研究预览 - 磨砂与透明度双向联动</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    body, html {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #050a08;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      overflow-x: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    /* 模拟手机容器 */
+    .phone-wrapper {
+      position: relative;
+      width: 410px;
+      height: 870px;
+      max-height: 96vh;
+      border-radius: 48px;
+      background: #080f0c;
+      border: 9px solid #1f2723;
+      box-shadow: 0 32px 90px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+
+      /* 核心物理联动变量 */
+      --glass-blur: 8.6px;
+      --glass-bg: rgba(255, 255, 255, 0.162);
+      --glass-saturate: 148%;
+    }
+
+    /* 微信小程序模拟顶部导航条 */
+    .mini-nav {
+      height: 60px;
+      display: flex;
+      align-items: flex-end;
+      padding: 0 20px 12px;
+      color: #fff;
+      font-size: 16px;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      z-index: 20;
+      background: rgba(8, 15, 12, 0.85);
+      backdrop-filter: blur(12px);
+    }
+    .capsule-mock {
+      margin-left: auto;
+      width: 80px;
+      height: 30px;
+      border-radius: 15px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.05);
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      padding: 0 6px;
+      font-size: 13px;
+      color: #ccc;
+    }
+
+    /* 手机内部屏幕视口 */
+    .stage {
+      position: relative;
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background-color: #080f0c;
+    }
+
+    /* 背景流动彩色斑块 */
+    .blob {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(60px);
+      pointer-events: none;
+      opacity: 0.65;
+      animation: float 14s infinite alternate ease-in-out;
+    }
+
+    .blob-1 {
+      width: 320px;
+      height: 320px;
+      background: radial-gradient(circle, #38ef7d 0%, #11998e 70%, transparent 100%);
+      top: 10%;
+      left: -60px;
+    }
+
+    .blob-2 {
+      width: 360px;
+      height: 360px;
+      background: radial-gradient(circle, #00f2fe 0%, #4facfe 70%, transparent 100%);
+      bottom: 8%;
+      right: -80px;
+      animation-duration: 18s;
+      animation-direction: alternate-reverse;
+    }
+
+    .blob-3 {
+      width: 250px;
+      height: 250px;
+      background: radial-gradient(circle, #f38181 0%, #fce38a 70%, transparent 100%);
+      top: 42%;
+      left: 25%;
+      opacity: 0.4;
+      animation-duration: 22s;
+    }
+
+    @keyframes float {
+      0% { transform: translate(0, 0) scale(1); }
+      100% { transform: translate(30px, 45px) scale(1.15); }
+    }
+
+    /* 底层穿透对照文字（用于测试去掉磨砂后的 100% 锐利透光质感） */
+    .under-glass-watermark {
+      position: absolute;
+      top: 160px;
+      left: 20px;
+      right: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 120px;
+      pointer-events: none;
+      z-index: 1;
+      opacity: 0.28;
+    }
+
+    .watermark-line {
+      font-size: 22px;
+      font-weight: 900;
+      letter-spacing: 3px;
+      color: #38ef7d;
+      font-family: -apple-system, monospace;
+      text-shadow: 0 0 15px rgba(56, 239, 125, 0.4);
+    }
+
+    .content-scroll {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 22px 18px 40px;
+    }
+
+    .badge-row {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      background: rgba(56, 239, 125, 0.12);
+      border: 1px solid rgba(56, 239, 125, 0.35);
+      border-radius: 999px;
+      font-size: 11px;
+      color: #38ef7d;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+    }
+
+    .badge.badge-active {
+      background: rgba(0, 242, 254, 0.18);
+      border-color: rgba(0, 242, 254, 0.6);
+      color: #00f2fe;
+    }
+
+    .title {
+      font-size: 22px;
+      font-weight: 700;
+      color: #ffffff;
+      margin-bottom: 5px;
+      text-align: center;
+    }
+
+    .desc {
+      font-size: 12px;
+      color: rgba(226, 236, 229, 0.7);
+      text-align: center;
+      line-height: 1.4;
+      margin-bottom: 18px;
+    }
+
+    /* 控制面板浮岛 (Glass Control Dock) */
+    .glass-control-dock {
+      position: relative;
+      width: 100%;
+      border-radius: 22px;
+      padding: 16px 18px;
+      box-sizing: border-box;
+      margin-bottom: 18px;
+      overflow: hidden;
+      isolation: isolate;
+
+      background: rgba(255, 255, 255, 0.08);
+      -webkit-backdrop-filter: blur(20px);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+
+      box-shadow:
+        inset 1px -1px 2px -0.5px rgba(255, 255, 255, 0.8),
+        inset -1px 1px 2px -0.5px rgba(255, 255, 255, 0.4),
+        0 14px 28px rgba(0, 0, 0, 0.3);
+    }
+
+    .dock-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .dock-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+
+    .dock-tags {
+      display: flex;
+      gap: 6px;
+    }
+
+    .tag-item {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.1);
+      color: #38ef7d;
+      font-family: monospace;
+    }
+
+    .slider-container {
+      width: 100%;
+      padding: 6px 0;
+    }
+
+    .slider-input {
+      width: 100%;
+      accent-color: #38ef7d;
+      cursor: pointer;
+    }
+
+    .dock-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 6px;
+    }
+
+    .sub-tip {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.55);
+      flex: 1;
+      padding-right: 10px;
+      line-height: 1.35;
+    }
+    .sub-tip.tip-highlight {
+      color: #00f2fe;
+    }
+
+    .mini-toggle-btn {
+      padding: 4px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.15);
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      cursor: pointer;
+    }
+    .mini-toggle-btn.btn-active {
+      background: rgba(0, 242, 254, 0.25);
+      border-color: #00f2fe;
+      color: #00f2fe;
+    }
+
+    /* 核心 1：液态玻璃卡片 */
+    .glass-card {
+      position: relative;
+      width: 100%;
+      border-radius: 28px;
+      padding: 22px;
+      box-sizing: border-box;
+      overflow: hidden;
+      isolation: isolate;
+
+      background: var(--glass-bg);
+      -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+
+      border: 1px solid rgba(255, 255, 255, 0.24);
+
+      /* 双重光学反射内高光 */
+      box-shadow:
+        inset 1.5px -1.5px 2px -1px rgba(255, 255, 255, 0.95),
+        inset -1.5px 1.5px 2px -1px rgba(255, 255, 255, 0.55),
+        inset 0 0 12px rgba(0, 0, 0, 0.2),
+        0 20px 40px rgba(0, 0, 0, 0.35);
+
+      transition: background 0.15s ease, -webkit-backdrop-filter 0.15s ease, backdrop-filter 0.15s ease, box-shadow 0.3s ease;
+    }
+
+    .glass-card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      pointer-events: none;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.02) 42%, transparent 60%);
+      opacity: 0.85;
+      z-index: 1;
+    }
+
+    /* 去掉磨砂时的纯透水晶状态 */
+    .glass-card.pure-crystal {
+      border-color: rgba(255, 255, 255, 0.38);
+      box-shadow:
+        inset 2px -2px 3px -1px rgba(255, 255, 255, 1),
+        inset -2px 2px 3px -1px rgba(255, 255, 255, 0.7),
+        inset 0 0 8px rgba(0, 0, 0, 0.1),
+        0 20px 45px rgba(0, 0, 0, 0.3);
+    }
+
+    .glass-card.dispersion-on {
+      box-shadow:
+        inset 2px -2px 3px -1px rgba(100, 220, 255, 0.9),
+        inset -2px 2px 3px -1px rgba(255, 120, 180, 0.8),
+        inset 0 0 14px rgba(0, 0, 0, 0.22),
+        0 20px 40px rgba(0, 0, 0, 0.35);
+    }
+
+    .card-chip {
+      display: inline-block;
+      padding: 4px 10px;
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 999px;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.9);
+      margin-bottom: 14px;
+    }
+
+    .chat-bubble {
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 16px;
+      padding: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      margin-bottom: 12px;
+    }
+
+    .bubble-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+
+    .bubble-sender {
+      font-size: 11px;
+      color: #38ef7d;
+      font-weight: 600;
+    }
+
+    .bubble-badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      background: rgba(56, 239, 125, 0.2);
+      color: #38ef7d;
+      border-radius: 4px;
+    }
+
+    .bubble-text {
+      font-size: 13px;
+      color: #ffffff;
+      line-height: 1.5;
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 12px;
+    }
+
+    .info-row .label { color: rgba(255, 255, 255, 0.55); }
+    .info-row .value { color: #fff; font-weight: 500; }
+    .info-row .value.highlight { color: #38ef7d; }
+    .info-row .value.highlight-warn { color: #00f2fe; font-weight: 600; }
+
+    /* 核心 2：物理液态拉伸胶囊按钮 */
+    .section-title {
+      width: 100%;
+      margin: 26px 0 12px;
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.5);
+      font-weight: 500;
+    }
+
+    .liquid-capsule-btn {
+      position: relative;
+      width: 100%;
+      height: 60px;
+      border-radius: 30px;
+      overflow: hidden;
+      isolation: isolate;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      will-change: transform, box-shadow;
+      touch-action: none;
+
+      background: var(--glass-bg);
+      -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+      border: 1px solid rgba(255, 255, 255, 0.32);
+
+      box-shadow:
+        inset 1.5px -1.5px 2px -0.5px rgba(255, 255, 255, 0.95),
+        inset -1.5px 1.5px 2px -0.5px rgba(255, 255, 255, 0.65),
+        inset 0 0 5px rgba(0, 0, 0, 0.15),
+        0 14px 28px rgba(0, 0, 0, 0.3);
+
+      transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.3s ease;
+    }
+
+    .liquid-capsule-btn.pure-crystal {
+      border-color: rgba(255, 255, 255, 0.45);
+      box-shadow:
+        inset 2px -2px 3px -0.5px rgba(255, 255, 255, 1),
+        inset -2px 2px 3px -0.5px rgba(255, 255, 255, 0.8),
+        0 14px 28px rgba(0, 0, 0, 0.25);
+    }
+
+    .btn-shine {
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      pointer-events: none;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0.05) 50%, transparent 100%);
+      opacity: 0.85;
+    }
+
+    .btn-inner {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-icon { font-size: 16px; }
+    .btn-text {
+      font-size: 15px;
+      font-weight: 600;
+      color: #ffffff;
+      letter-spacing: 0.5px;
+    }
+
+    .status-tips {
+      margin-top: 12px;
+      text-align: center;
+      font-size: 12px;
+      color: #38ef7d;
+      font-family: monospace;
+      min-height: 18px;
+    }
+
+    /* 散色切换控制器 */
+    .controls-panel {
+      width: 100%;
+      margin-top: 20px;
+    }
+
+    .control-btn {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 12px 16px;
+      border-radius: 14px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .ctrl-label { color: rgba(255, 255, 255, 0.8); }
+    .ctrl-state { color: #38ef7d; font-weight: 600; }
+  </style>
+</head>
+<body>
+
+<div class="phone-wrapper" id="phoneWrapper">
+  <!-- 微信小程序模拟胶囊导航 -->
+  <div class="mini-nav">
+    <span>液态玻璃质感研究</span>
+    <div class="capsule-mock">
+      <span>●●●</span>
+      <span>|</span>
+      <span>◎</span>
+    </div>
+  </div>
+
+  <div class="stage">
+    <!-- 动态背景彩色流体 -->
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+
+    <!-- 背景对照水印：去掉磨砂时能清晰看见底层文字穿透 -->
+    <div class="under-glass-watermark">
+      <div class="watermark-line">CRYSTAL CLEAR GLASS</div>
+      <div class="watermark-line">SHARP BACKGROUND LAYER</div>
+      <div class="watermark-line">OPTICAL FRESNEL TEST</div>
+    </div>
+
+    <div class="content-scroll">
+      <div class="badge-row">
+        <span class="badge">WXSS + WXS Prototype</span>
+        <span class="badge" id="quickToggleBadge">去掉磨砂 (纯透水晶)</span>
+      </div>
+      <div class="title">微信小程序液态玻璃</div>
+      <div class="desc">磨砂 (Blur) 与透明度 (Opacity) 双向动态联动引擎</div>
+
+      <!-- 核心控制面板：滑块联动 -->
+      <div class="glass-control-dock">
+        <div class="dock-header">
+          <span class="dock-title">双向联动控制条</span>
+          <div class="dock-tags">
+            <span class="tag-item" id="tagBlur">Blur: 8.6px</span>
+            <span class="tag-item" id="tagAlpha">Alpha: 0.162</span>
+          </div>
+        </div>
+
+        <div class="slider-container">
+          <input 
+            type="range" 
+            class="slider-input" 
+            id="glassSlider" 
+            min="0" 
+            max="100" 
+            value="60"
+          />
+        </div>
+
+        <div class="dock-footer">
+          <span class="sub-tip" id="dockTip">● 滑动滑块：磨砂度随透明度按平方曲线 (frosted²) 同步增减</span>
+          <button class="mini-toggle-btn" id="btnToggleNoFrost">去掉磨砂</button>
+        </div>
+      </div>
+
+      <!-- 核心面板 -->
+      <div class="glass-card" id="glassCard">
+        <div class="card-chip" id="cardChip">磨砂透光模式 (对齐 Compose 联动)</div>
+        <div class="chat-bubble">
+          <div class="bubble-header">
+            <span class="bubble-sender">AI 智能助理</span>
+            <span class="bubble-badge" id="bubbleBadge">磨砂·透光</span>
+          </div>
+          <div class="bubble-text">“去掉磨砂时，背景文字 100% 锐利穿透；依靠双层内高光与斜向菲涅尔反光，依然拥有极为厚重的玻璃立体感。”</div>
+        </div>
+        <div class="info-row">
+          <span class="label">磨砂模糊半径 (Blur)：</span>
+          <span class="value highlight" id="valBlur">8.6 px</span>
+        </div>
+        <div class="info-row">
+          <span class="label">背景底色半透 (Alpha)：</span>
+          <span class="value highlight" id="valAlpha">0.162 (60%)</span>
+        </div>
+        <div class="info-row">
+          <span class="label">色彩鲜艳度 (Saturate)：</span>
+          <span class="value" id="valSaturate">148%</span>
+        </div>
+        <div class="info-row">
+          <span class="label">边缘高光机制：</span>
+          <span class="value highlight">Anisotropic Inner-Shadows</span>
+        </div>
+      </div>
+
+      <!-- 液态弹性按钮 -->
+      <div class="section-title">交互体验 (鼠标/手势按住拖拽)</div>
+
+      <div class="liquid-capsule-btn" id="liquidBtn">
+        <div class="btn-shine"></div>
+        <div class="btn-inner">
+          <span class="btn-icon">⚡</span>
+          <span class="btn-text">按住并拖拽感受液态形变</span>
+        </div>
+      </div>
+
+      <div class="status-tips" id="statusText">轻触或按压按钮感受物理阻尼与液化拉伸</div>
+
+      <div class="controls-panel">
+        <div class="control-btn" id="toggleDispersionBtn">
+          <span class="ctrl-label">棱镜色散高光 (Dispersion)</span>
+          <span class="ctrl-state" id="dispersionState">已开启</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const MIN_OPACITY = 0.03;
+  const MAX_OPACITY = 0.25;
+  const MAX_BLUR = 24;
+
+  const phoneWrapper = document.getElementById('phoneWrapper');
+  const slider = document.getElementById('glassSlider');
+  const tagBlur = document.getElementById('tagBlur');
+  const tagAlpha = document.getElementById('tagAlpha');
+  const dockTip = document.getElementById('dockTip');
+  const btnToggleNoFrost = document.getElementById('btnToggleNoFrost');
+  const quickToggleBadge = document.getElementById('quickToggleBadge');
+  const cardChip = document.getElementById('cardChip');
+  const bubbleBadge = document.getElementById('bubbleBadge');
+
+  const valBlur = document.getElementById('valBlur');
+  const valAlpha = document.getElementById('valAlpha');
+  const valSaturate = document.getElementById('valSaturate');
+
+  const btn = document.getElementById('liquidBtn');
+  const card = document.getElementById('glassCard');
+  const statusEl = document.getElementById('statusText');
+  const toggleBtn = document.getElementById('toggleDispersionBtn');
+  const dispersionStateEl = document.getElementById('dispersionState');
+
+  let dispersion = true;
+  let noFrostMode = false;
+
+  function calculateGlassParams(percent) {
+    const p = Math.max(0, Math.min(100, percent)) / 100;
+    // 平方曲线联动算法
+    const frosted = p * p;
+    const blur = Math.round(MAX_BLUR * frosted * 10) / 10;
+    const bgAlpha = (MIN_OPACITY + (MAX_OPACITY - MIN_OPACITY) * p).toFixed(3);
+    const saturate = Math.round(100 + 80 * p);
+    return { blur, bgAlpha, saturate };
+  }
+
+  function updateView(percent, forceZero = false) {
+    let blur, bgAlpha, saturate;
+    if (forceZero) {
+      blur = 0;
+      bgAlpha = MIN_OPACITY.toFixed(3);
+      saturate = 100;
+      noFrostMode = true;
+      slider.value = 0;
+    } else {
+      const res = calculateGlassParams(percent);
+      blur = res.blur;
+      bgAlpha = res.bgAlpha;
+      saturate = res.saturate;
+      noFrostMode = (blur === 0);
+      slider.value = percent;
+    }
+
+    // 动态注入 CSS 变量
+    phoneWrapper.style.setProperty('--glass-blur', `${blur}px`);
+    phoneWrapper.style.setProperty('--glass-bg', `rgba(255, 255, 255, ${bgAlpha})`);
+    phoneWrapper.style.setProperty('--glass-saturate', `${saturate}%`);
+
+    tagBlur.textContent = `Blur: ${blur}px`;
+    tagAlpha.textContent = `Alpha: ${bgAlpha}`;
+    valBlur.textContent = `${blur} px ${noFrostMode ? '(已完全去掉)' : ''}`;
+    valAlpha.textContent = `${bgAlpha} (${slider.value}%)`;
+    valSaturate.textContent = `${saturate}%`;
+
+    if (noFrostMode) {
+      valBlur.className = 'value highlight-warn';
+      card.classList.add('pure-crystal');
+      btn.classList.add('pure-crystal');
+      btnToggleNoFrost.textContent = '开启磨砂';
+      btnToggleNoFrost.classList.add('btn-active');
+      quickToggleBadge.textContent = '已去除磨砂 (纯透水晶)';
+      quickToggleBadge.classList.add('badge-active');
+      cardChip.textContent = '纯透水晶模式 (Blur=0，高光边缘依旧晶莹)';
+      bubbleBadge.textContent = '无磨砂·纯透';
+      dockTip.innerHTML = '● 当前为「纯透水晶玻璃」模式（Blur=0，背后文字锐利清晰）';
+      dockTip.className = 'sub-tip tip-highlight';
+      statusEl.textContent = '已切换为纯透水晶模式：磨砂清零，底色极清，高光保留';
+    } else {
+      valBlur.className = 'value highlight';
+      card.classList.remove('pure-crystal');
+      btn.classList.remove('pure-crystal');
+      btnToggleNoFrost.textContent = '去掉磨砂';
+      btnToggleNoFrost.classList.remove('btn-active');
+      quickToggleBadge.textContent = '磨砂雾化生效中';
+      quickToggleBadge.classList.remove('badge-active');
+      cardChip.textContent = '磨砂透光模式 (对齐 Compose 联动)';
+      bubbleBadge.textContent = '磨砂·透光';
+      dockTip.innerHTML = '● 滑动滑块：磨砂度随透明度按平方曲线 (frosted²) 同步增减';
+      dockTip.className = 'sub-tip';
+      statusEl.textContent = `双向联动: 磨砂=${blur}px, 底色透明度=${Math.round(bgAlpha * 100)}%`;
+    }
+  }
+
+  // 滑块事件
+  slider.addEventListener('input', (e) => {
+    updateView(parseInt(e.target.value));
+  });
+
+  // 去掉磨砂切换
+  function toggleFrost() {
+    if (noFrostMode) {
+      updateView(60, false);
+    } else {
+      updateView(0, true);
+    }
+  }
+
+  btnToggleNoFrost.addEventListener('click', toggleFrost);
+  quickToggleBadge.addEventListener('click', toggleFrost);
+
+  // 色散切换
+  card.classList.add('dispersion-on');
+  toggleBtn.addEventListener('click', () => {
+    dispersion = !dispersion;
+    if (dispersion) {
+      card.classList.add('dispersion-on');
+      dispersionStateEl.textContent = '已开启';
+    } else {
+      card.classList.remove('dispersion-on');
+      dispersionStateEl.textContent = '已关闭';
+    }
+  });
+
+  // 物理弹性手势
+  let startX = 0, startY = 0;
+  let isDown = false;
+
+  function onTouchStart(clientX, clientY) {
+    isDown = true;
+    startX = clientX;
+    startY = clientY;
+    btn.style.transition = 'transform 0.1s ease-out, box-shadow 0.1s ease-out';
+    btn.style.transform = 'scale(0.95)';
+    statusEl.textContent = '检测到按压输入 -> 物理形变激活';
+  }
+
+  function onTouchMove(clientX, clientY) {
+    if (!isDown) return;
+    const dx = clientX - startX;
+    const dy = clientY - startY;
+
+    const maxOffset = 24;
+    let moveX = dx * 0.18;
+    let moveY = dy * 0.18;
+    if (moveX > maxOffset) moveX = maxOffset;
+    if (moveX < -maxOffset) moveX = -maxOffset;
+    if (moveY > maxOffset) moveY = maxOffset;
+    if (moveY < -maxOffset) moveY = -maxOffset;
+
+    const stretchX = 1 + Math.min(Math.abs(dx) / 320, 0.09);
+    const stretchY = 1 + Math.min(Math.abs(dy) / 320, 0.09);
+
+    btn.style.transition = 'none';
+    btn.style.transform = `translate(${moveX}px, ${moveY}px) scale(${stretchX}, ${stretchY})`;
+    statusEl.textContent = `液态形变: Δx=${Math.round(dx)}, stretchX=${stretchX.toFixed(2)}`;
+  }
+
+  function onTouchEnd() {
+    if (!isDown) return;
+    isDown = false;
+    btn.style.transition = 'transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.3s ease';
+    btn.style.transform = 'translate(0px, 0px) scale(1)';
+    statusEl.textContent = '弹性弹簧回弹归位 (Spring Bounce)';
+  }
+
+  btn.addEventListener('mousedown', (e) => onTouchStart(e.clientX, e.clientY));
+  window.addEventListener('mousemove', (e) => onTouchMove(e.clientX, e.clientY));
+  window.addEventListener('mouseup', onTouchEnd);
+
+  btn.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    onTouchStart(t.clientX, t.clientY);
+  });
+  window.addEventListener('touchmove', (e) => {
+    if (!isDown) return;
+    const t = e.touches[0];
+    onTouchMove(t.clientX, t.clientY);
+  });
+  window.addEventListener('touchend', onTouchEnd);
+  window.addEventListener('touchcancel', onTouchEnd);
+
+  // 初始化
+  updateView(60);
+</script>
+
+</body>
+</html>
