@@ -172,3 +172,9 @@
 - 匿名端点：`info/refs?service=git-upload-pack` 返回 **200**（`application/x-git-upload-pack-advertisement`），`raw.githubusercontent.com/CGR-MIX/android-chat/main/README.md` 与 `…/app/src/main/java/com/ddzhilian/chat/UpdateProtocol.kt` 均返回 200。此前 401 / 404 的前置条件已解除。
 - 用与 `UpdateProtocol.kt` 完全相同的算法（pkt-line 解析、`refs/tags` 过滤、语义版本比较）解析真实响应：HTTP 200、service 头正确、解析出 2 条 ref（`HEAD`、`refs/heads/main`）、**没有版本 tag**，因此 `latestRelease` 为 null —— App 的「检查更新」当前会显示「仓库里还没有版本 tag」。这也说明解析器对真实 GitHub 响应（含能力列表行）有效，此前只用合成数据覆盖过。
 - 仍未验证：真实 tag + Release 附件下的下载与安装链路（仓库尚无 tag，也没有 Release 附件）。
+
+## v1.5.0 发版：启用 git 更新通道
+
+- 版本：`versionCode` 5 → 6，`versionName` 1.4.0 → 1.5.0。仓库已改为公开，匿名 refs 端点在发版前实测返回 200，因此这次发版同时让更新通道真正可用。
+- `npm run android:chat:check`：BUILD SUCCESSFUL；21 个单测全部通过；Lint 0 error。APK：`output/ddzhilian-chat-debug.apk`，66,913,408 字节，SHA-256 `76a4661922278decb797b718401cf72d831b0369c7c0cade0fbd0a8cfec53fc0`。
+- 发布动作：`git tag v1.5.0 && git push origin v1.5.0`，再把上面的 APK 作为该 tag 的 Release 附件上传（安装包不进仓库历史）。只推 tag 不上传附件时，App 能发现新版本但下载会失败。
