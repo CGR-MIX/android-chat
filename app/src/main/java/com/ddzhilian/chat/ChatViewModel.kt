@@ -1,6 +1,7 @@
 package com.ddzhilian.chat
 
 import android.app.Application
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
@@ -25,6 +26,33 @@ import org.json.JSONObject
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+/** 管理员模式的界面状态：隐秘入口 → 密码验证 → 面板。 */
+sealed interface AdminMode {
+    object Closed : AdminMode
+    object Gate : AdminMode
+    data class Open(val dashboard: AdminDashboard) : AdminMode
+}
+
+/** 历史暂存文件列表里的一行（服务端 /api/admin/history/files）。 */
+data class AdminHistoryFile(
+    val historyId: String,
+    val roomId: String,
+    val fileName: String,
+    val size: Long,
+    val createdAt: String,
+    val senderName: String,
+    val mimeType: String,
+)
+
+fun parseAdminHistoryFile(p: JSONObject): AdminHistoryFile = AdminHistoryFile(
+    historyId = p.optString("historyId"),
+    roomId = p.optString("roomId"),
+    fileName = p.optString("fileName", "未命名文件"),
+    size = p.optLong("size"),
+    createdAt = p.optString("createdAt"),
+    senderName = p.optString("sourceDeviceName", "设备"),
+    mimeType = p.optString("mimeType", "application/octet-stream"),
+)
 /** 一次性打开请求：把附件交给系统默认应用时需要的 URI 与 MIME。 */
 data class AttachmentOpen(val uri: Uri, val mimeType: String)
 
@@ -44,6 +72,19 @@ data class ChatState(
     val update: UpdateState = UpdateState.Idle,
     /** 下载完成后要交给系统默认应用打开的一次性请求；界面消费后清空。 */
     val openRequest: AttachmentOpen? = null,
+    /** 后台配置的助手名称/唤醒词/头像，拉取失败时保持默认值。 */
+    val ai: AiBranding = AiBranding(),
+    /** 正在等待 AI 回复的房间；界面据此显示「思考中」。 */
+    val aiThinkingRoom: String? = null,
+    val aiAvatarRevision: Int = 0,
+    val admin: AdminMode = AdminMode.Closed,
+    val adminBusy: Boolean = false,
+    val adminError: String? = null,
+    val adminNotice: String? = null,
+    val adminHistoryFiles: List<AdminHistoryFile> = emptyList(),
+    /** 非空表示还能继续加载更多历史附件。 */
+    val adminHistoryCursor: AdminHistoryCursor? = null,
+    val adminHistoryLoading: Boolean = false,
 ) {
     val room get() = rooms.firstOrNull { it.id == activeRoomId }
     val draft get() = drafts[activeRoomId].orEmpty()
@@ -61,6 +102,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val updateChannel = UpdateChannel(updateClient, File(app.cacheDir, "updates"))
     /** 用户点开一个还没下载的附件时记下的意图：接收完成后立刻用系统默认应用打开。 */
     private var pendingOpenId: String? = null
+    /** AI 助手品牌、提问与管理员会话共用同一套 HTTP 客户端配置。 */
+    private val aiClient by lazy { AiClient(address, client) }
+    private val aiAvatars by lazy { AiAvatarStore(getApplication(), client) }
+    private var aiBrandingLoaded = false
+    /** 「版本」连点计数：超时或成功进入后归零，不留下可见痕迹。 */
+    private var versionTapCount = 0
+    private var lastVersionTapAt = 0L
     private val mutable = MutableStateFlow(ChatState(
         server = prefs.getString("server", DEFAULT_SERVER)!!,
         name = prefs.getString("name", Build.MODEL)!!,
@@ -275,6 +323,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     publishMessages(active)
                     refresh(active)
                 }
+                // 每次握手成功都顺手刷新一次助手品牌（名称/唤醒词/头像）；失败静默。
+                loadAiBranding()
             }
             "public-room-created", "private-room-created" -> { navigating = false; openRoom(p.getString("roomId")) }
             "session-created" -> { calls.sessionCreated(p); if (navigating) { navigating = false; openRoom(p.getString("roomId")) } }
@@ -327,6 +377,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val text = state.value.draft.trim()
         if (text.isEmpty() || room.id in state.value.archivedRoomIds || !room.joined(state.value.selfId) || !submittingRooms.add(room.id)) return
         val message = Message(UUID.randomUUID().toString(), room.id, state.value.selfId, state.value.name, text, Instant.now().toString(), Delivery.Queued)
+        // 只有 `@名称` / 唤醒词命中才转给 AI：服务端会把回复写进同一房间历史，
+        // 与网页端完全一致，其它成员和后续刷新都能看到这条消息。
+        val aiPrompt = parseAiMention(text, state.value.ai)
         scope.launch {
             try {
                 local.save(message).await()
@@ -334,8 +387,43 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // Only clear the submitted draft, never a newer one typed during persistence.
                 if (state.value.activeRoomId == room.id && state.value.draft.trim() == text) draft("")
                 if (state.value.connected) enqueue(message)
+                when {
+                    aiPrompt == null -> Unit
+                    aiPrompt.isBlank() -> showNotice("在 @" + state.value.ai.name + " 后面写上问题，或发送 /help 查看可用指令")
+                    awaitDelivered(message) -> askAi(room.id, aiPrompt)
+                    else -> showError("消息还没发出去，AI 提问已取消；点按消息重试后再发一次")
+                }
             } catch (e: Exception) { showError("无法保存待发送消息：" + e.message) }
             finally { submittingRooms.remove(room.id) }
+        }
+    }
+
+    /** 等本机消息真正落到服务端再提问，否则模型读不到用户刚发的问题。 */
+    private suspend fun awaitDelivered(message: Message, timeoutMs: Long = 25_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            when (cache[message.roomId].orEmpty().firstOrNull { it.id == message.id }?.delivery) {
+                Delivery.Sent -> return true
+                Delivery.Failed -> return false
+                else -> delay(120)
+            }
+        }
+        return false
+    }
+
+    /** 向 AI 提问；回复由服务端写入房间历史，这里只负责刷新与「思考中」状态。 */
+    private suspend fun askAi(roomId: String, prompt: String) {
+        mutable.update { it.copy(aiThinkingRoom = roomId) }
+        try {
+            val token = withTimeout(20_000) { auth.first { it.isNotEmpty() } }
+            aiClient.chat(token, roomId, prompt, state.value.name)
+            refresh(roomId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            showError(e.message ?: "AI 请求失败，请稍后重试")
+        } finally {
+            mutable.update { it.copy(aiThinkingRoom = null) }
         }
     }
     fun retry(message: Message) {
@@ -722,6 +810,250 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val error = runCatching { JSONObject(response.body?.string().orEmpty()).optString("error") }.getOrNull()
             throw IOException("请求失败 (" + response.code + ")：" + (error?.take(220)?.ifBlank { "服务暂不可用" } ?: "服务暂不可用"))
         }
+    }
+
+    /** 聊天界面用的助手头像；还没下载完时返回 null，界面回退文字头像。 */
+    fun aiAvatar(): Bitmap? = aiAvatars.cached(state.value.ai.avatarUrl)
+
+    /** 拉取后台配置的助手名称/唤醒词/头像；失败保留既有状态，不打断聊天。 */
+    fun loadAiBranding(force: Boolean = false) {
+        if (aiBrandingLoaded && !force) return
+        scope.launch {
+            val branding = runCatching { aiClient.branding() }.getOrNull() ?: return@launch
+            aiBrandingLoaded = true
+            mutable.update { it.copy(ai = branding) }
+            if (branding.avatarUrl != null) {
+                aiAvatars.load(branding.avatarUrl)
+                mutable.update { it.copy(aiAvatarRevision = it.aiAvatarRevision + 1) }
+            }
+        }
+    }
+
+    /** 设置页「版本」行连点 7 次进入管理员验证；间隔超过 3 秒重新计数。 */
+    fun adminVersionTap() {
+        val now = System.currentTimeMillis()
+        if (now - lastVersionTapAt > 3_000) versionTapCount = 0
+        lastVersionTapAt = now
+        versionTapCount += 1
+        if (versionTapCount < 7) return
+
+        versionTapCount = 0
+        if (state.value.admin is AdminMode.Open) return
+        mutable.update { it.copy(admin = AdminMode.Gate, adminError = null, adminNotice = null) }
+    }
+
+    fun adminCancelGate() {
+        if (state.value.adminBusy) return
+        mutable.update { it.copy(admin = AdminMode.Closed, adminError = null) }
+    }
+
+    /** 用主站管理员账号验证；成功后面板直接复用后台返回的同一份配置。 */
+    fun adminLogin(email: String, password: String) {
+        if (state.value.adminBusy) return
+        if (email.isBlank() || password.isEmpty()) {
+            mutable.update { it.copy(adminError = "请填写管理员邮箱与密码") }
+            return
+        }
+
+        mutable.update { it.copy(adminBusy = true, adminError = null) }
+        scope.launch {
+            runCatching { aiClient.adminLogin(email, password) }
+                .onSuccess { payload ->
+                    mutable.update {
+                        it.copy(admin = AdminMode.Open(parseAdminDashboard(payload)), adminBusy = false, adminError = null)
+                    }
+                    loadAiBranding(force = true)
+                    loadAdminHistory(reset = true)
+                }
+                .onFailure { error ->
+                    mutable.update { it.copy(adminBusy = false, adminError = error.message ?: "管理员登录失败") }
+                }
+        }
+    }
+
+    fun adminLogout() {
+        scope.launch {
+            runCatching { aiClient.adminLogout() }
+            aiBrandingLoaded = false
+            mutable.update {
+                it.copy(
+                    admin = AdminMode.Closed, adminBusy = false, adminError = null, adminNotice = null,
+                    adminHistoryFiles = emptyList(), adminHistoryCursor = null, adminHistoryLoading = false,
+                )
+            }
+        }
+    }
+
+    fun adminClose() {
+        mutable.update { it.copy(admin = AdminMode.Closed, adminBusy = false, adminError = null, adminNotice = null) }
+    }
+
+    fun adminRefresh() {
+        if (state.value.adminBusy) return
+        mutable.update { it.copy(adminBusy = true, adminError = null) }
+        scope.launch {
+            runCatching { aiClient.adminState() }
+                .onSuccess { payload ->
+                    mutable.update { it.copy(admin = AdminMode.Open(parseAdminDashboard(payload)), adminBusy = false) }
+                    loadAdminHistory(reset = true)
+                }
+                .onFailure { error ->
+                    mutable.update { it.copy(adminBusy = false, adminError = error.message ?: "后台状态刷新失败") }
+                }
+        }
+    }
+
+    /** 保存 AI 配置切片（policy / providers / models），返回的 dashboard 立刻回写界面。 */
+    fun adminSaveAiConfig(payload: JSONObject, doneMessage: String) {
+        if (state.value.adminBusy) return
+        mutable.update { it.copy(adminBusy = true, adminError = null) }
+        scope.launch {
+            runCatching { aiClient.saveAiConfig(payload) }
+                .onSuccess { saved ->
+                    mutable.update {
+                        it.copy(admin = AdminMode.Open(parseAdminDashboard(saved)), adminBusy = false, adminNotice = doneMessage)
+                    }
+                    loadAiBranding(force = true)
+                }
+                .onFailure { error ->
+                    mutable.update { it.copy(adminBusy = false, adminError = error.message ?: "AI 配置保存失败") }
+                }
+        }
+    }
+
+    fun adminUploadAvatar(uri: Uri) {
+        if (state.value.adminBusy) return
+        mutable.update { it.copy(adminBusy = true, adminError = null) }
+        scope.launch {
+            val read = runCatching {
+                withContext(Dispatchers.IO) {
+                    val bytes = getApplication<Application>().contentResolver.openInputStream(uri)
+                        ?.use { it.readBytes() }
+                        ?: throw IOException("无法读取所选图片")
+                    if (bytes.size > 2 * 1024 * 1024) throw IOException("头像不能超过 2 MB")
+                    val mimeType = when {
+                        bytes.size >= 4 && bytes[0] == 0x89.toByte() -> "image/png"
+                        bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() -> "image/jpeg"
+                        else -> "image/webp"
+                    }
+                    mimeType to bytes
+                }
+            }
+
+            read.onSuccess { (mimeType, bytes) ->
+                runCatching { aiClient.uploadAvatar(bytes, mimeType) }
+                    .onSuccess { saved ->
+                        mutable.update {
+                            it.copy(admin = AdminMode.Open(parseAdminDashboard(saved)), adminBusy = false, adminNotice = "头像已更新")
+                        }
+                        loadAiBranding(force = true)
+                    }
+                    .onFailure { error ->
+                        mutable.update { it.copy(adminBusy = false, adminError = error.message ?: "头像上传失败") }
+                    }
+            }.onFailure { error ->
+                mutable.update { it.copy(adminBusy = false, adminError = error.message ?: "头像读取失败") }
+            }
+        }
+    }
+
+    fun adminDeleteAvatar() {
+        if (state.value.adminBusy) return
+        mutable.update { it.copy(adminBusy = true, adminError = null) }
+        scope.launch {
+            runCatching { aiClient.deleteAvatar() }
+                .onSuccess { saved ->
+                    mutable.update {
+                        it.copy(admin = AdminMode.Open(parseAdminDashboard(saved)), adminBusy = false, adminNotice = "头像已移除")
+                    }
+                    loadAiBranding(force = true)
+                }
+                .onFailure { error ->
+                    mutable.update { it.copy(adminBusy = false, adminError = error.message ?: "头像移除失败") }
+                }
+        }
+    }
+
+    fun adminDeleteHistory(file: AdminHistoryFile) {
+        if (state.value.adminBusy) return
+        mutable.update { it.copy(adminBusy = true, adminError = null) }
+        scope.launch {
+            runCatching { aiClient.deleteHistory("file", file.historyId) }
+                .onSuccess { saved ->
+                    mutable.update { current ->
+                        current.copy(
+                            admin = AdminMode.Open(parseAdminDashboard(saved)),
+                            adminHistoryFiles = current.adminHistoryFiles.filterNot { it.historyId == file.historyId },
+                            adminBusy = false,
+                            adminNotice = "已删除 " + file.fileName,
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    mutable.update { it.copy(adminBusy = false, adminError = error.message ?: "历史记录删除失败") }
+                }
+        }
+    }
+
+    fun adminClearHistory() {
+        if (state.value.adminBusy) return
+        mutable.update { it.copy(adminBusy = true, adminError = null) }
+        scope.launch {
+            runCatching { aiClient.clearHistory() }
+                .onSuccess { saved ->
+                    mutable.update {
+                        it.copy(
+                            admin = AdminMode.Open(parseAdminDashboard(saved)),
+                            adminHistoryFiles = emptyList(),
+                            adminHistoryCursor = null,
+                            adminBusy = false,
+                            adminNotice = "全站历史已清空",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    mutable.update { it.copy(adminBusy = false, adminError = error.message ?: "清空历史失败") }
+                }
+        }
+    }
+
+    fun loadAdminHistory(reset: Boolean = false) {
+        if (state.value.adminHistoryLoading) return
+        if (!reset && state.value.adminHistoryCursor == null) return
+        val cursor = if (reset) null else state.value.adminHistoryCursor
+        mutable.update { it.copy(adminHistoryLoading = true) }
+        scope.launch {
+            runCatching { aiClient.historyFiles(limit = 30, cursor = cursor) }
+                .onSuccess { payload ->
+                    val files = payload.optJSONArray("files")?.let { array ->
+                        (0 until array.length()).mapNotNull { index -> array.optJSONObject(index)?.let(::parseAdminHistoryFile) }
+                    }.orEmpty()
+                    val next = payload.optJSONObject("nextCursor")?.let {
+                        AdminHistoryCursor(it.optString("createdAt"), it.optString("historyId"))
+                    }
+                    val history = payload.optJSONObject("history")
+                    mutable.update { current ->
+                        val open = current.admin as? AdminMode.Open
+                        current.copy(
+                            adminHistoryFiles = if (reset) files else current.adminHistoryFiles + files,
+                            adminHistoryCursor = next,
+                            adminHistoryLoading = false,
+                            admin = if (open != null && history != null) {
+                                AdminMode.Open(open.dashboard.copy(history = history))
+                            } else {
+                                current.admin
+                            },
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    mutable.update { it.copy(adminHistoryLoading = false, adminError = error.message ?: "历史文件加载失败") }
+                }
+        }
+    }
+
+    fun adminConsumeNotice() {
+        mutable.update { it.copy(adminError = null, adminNotice = null) }
     }
 
     fun settings(name: String, reduce: Boolean) {

@@ -31,6 +31,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -153,6 +154,13 @@ fun ChatApp(vm: ChatViewModel) {
             vm.consumeOpenRequest()
         }
         BackHandler(s.activeRoomId != null) { vm.back() }
+        // 管理员模式：返回键先退出面板，密码验证对话框浮在任意界面之上。
+        BackHandler(s.admin is AdminMode.Open) { vm.adminClose() }
+        if (s.admin is AdminMode.Gate) AdminGateDialog(s, vm)
+        if (s.admin is AdminMode.Open) {
+            // 管理员面板接管整屏：不渲染聊天输入栏与 Dock，避免触摸穿透。
+            AdminScreen(s, vm)
+        } else {
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).imePadding()) {
             Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
                 Wallpaper(dark)
@@ -198,8 +206,18 @@ fun ChatApp(vm: ChatViewModel) {
                         .padding(horizontal = 30.dp, vertical = 16.dp).widthIn(max = 420.dp).fillMaxWidth(),
                 )
             } else {
-                Row(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(horizontal = 12.dp, vertical = 10.dp)
-                    .widthIn(max = 760.dp).fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = 10.dp).widthIn(max = 760.dp).fillMaxWidth()) {
+                    // 命中 @名称 / 唤醒词时提前说明这条消息会交给助手；规则与服务端一致。
+                    if (parseAiMention(s.draft, s.ai) != null) {
+                        Text(
+                            "将由 " + s.ai.name + " 回复",
+                            Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 6.dp),
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
                     // Round attach button, deliberately separate from the input capsule.
                     Box(Modifier.size(ControlHeight).glass(backdrop, s.reduceTransparency, shape = CircleShape)
                         .clickable(role = Role.Button, enabled = s.localReady) { plusOpen = !plusOpen }, contentAlignment = Alignment.Center) {
@@ -221,6 +239,7 @@ fun ChatApp(vm: ChatViewModel) {
                         FilledIconButton(onClick = vm::sendText, enabled = !voiceMode && attachable && s.draft.isNotBlank(), modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Rounded.ArrowUpward, "发送消息")
                         }
+                    }
                     }
                 }
             }
@@ -260,6 +279,7 @@ fun ChatApp(vm: ChatViewModel) {
             "pair" -> EntryDialog("通过连接码聊天", "输入另一台设备显示的连接码", "连接码", { dialog = null }) { vm.pair(it); dialog = null }
             "search" -> MessageSearchDialog(s, vm) { dialog = null }
             "info" -> RoomInfo(s) { dialog = null }
+        }
         }
     }
 }
@@ -463,8 +483,16 @@ private fun Conversation(s: ChatState, vm: ChatViewModel, menus: GlassMenuContro
                 if (row.messages.any { it.id == s.firstUnreadId }) TextButton(onClick = vm::locateFirstUnread, modifier = Modifier.fillMaxWidth()) { Text("未读消息 · 定位最早未读") }
                 val single = row.messages.singleOrNull()
                 if (row.messages.first().isImage) ImageStackBubble(row.messages, s, vm, menus, onDownload) { galleryId = it }
-                else if (single != null) MessageBubble(single, single.senderId == s.selfId, vm, menus, onDownload) { galleryId = single.id }
+                else if (single != null) MessageBubble(s, single, single.senderId == s.selfId, vm, menus, onDownload) { galleryId = single.id }
             }
+        }
+        if (s.aiThinkingRoom != null && s.aiThinkingRoom == s.activeRoomId) item {
+            Text(
+                "AI 正在思考…",
+                Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         if (s.loading) item { Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) } }
         if (s.hasMore) item { TextButton(onClick = vm::loadOlder, enabled = !s.loading && s.connected, modifier = Modifier.fillMaxWidth()) { Text("加载更早的消息") } }
@@ -492,10 +520,31 @@ private fun ImageStackBubble(images: List<Message>, s: ChatState, vm: ChatViewMo
 }
 
 @Composable
-private fun MessageBubble(message: Message, own: Boolean, vm: ChatViewModel, menus: GlassMenuController, onDownload: (Message) -> Unit, onImage: () -> Unit) {
+private fun MessageBubble(s: ChatState, message: Message, own: Boolean, vm: ChatViewModel, menus: GlassMenuController, onDownload: (Message) -> Unit, onImage: () -> Unit) {
     var anchor by remember(message.id) { mutableStateOf(Rect.Zero) }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (own) Alignment.End else Alignment.Start) {
-        if (!own) Text(message.senderName, Modifier.padding(start = 5.dp, bottom = 6.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (!own) {
+            val bot = message.senderId == AI_BOT_DEVICE_ID
+            Row(Modifier.padding(start = 5.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (bot) {
+                    // 后台配了头像就画头像，否则退回「AI」小圆标；两处都跟主站同一份配置。
+                    val avatar = remember(s.aiAvatarRevision) { vm.aiAvatar() }
+                    Box(
+                        Modifier.size(18.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (avatar != null) Image(avatar.asImageBitmap(), null, Modifier.fillMaxSize())
+                        else Text("AI", fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.width(5.dp))
+                }
+                Text(
+                    if (bot) s.ai.name else message.senderName,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         Box(Modifier.onGloballyPositioned { anchor = it.boundsInWindow() }) {
             Column(Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomEnd = if (own) 6.dp else 22.dp, bottomStart = if (own) 22.dp else 6.dp))
                 .background(if (own) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface.copy(alpha = .94f))
@@ -509,7 +558,7 @@ private fun MessageBubble(message: Message, own: Boolean, vm: ChatViewModel, men
                         Text(message.fileName, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = color, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(formatBytes(message.size) + " · 点击打开", fontSize = 10.sp, color = color.copy(alpha = .78f))
                     }
-                } else Text(message.text, fontSize = 16.sp, lineHeight = 24.sp, color = color)
+                } else Text(stripChatMarkup(message.text), fontSize = 16.sp, lineHeight = 24.sp, color = color)
             }
         }
         Text(deliveryLabel(message), Modifier.padding(horizontal = 4.dp, vertical = 5.dp), fontSize = 10.sp,
@@ -571,7 +620,8 @@ private fun Settings(s: ChatState, vm: ChatViewModel, dark: Boolean) {
         Text("原生 Android · Liquid Glass", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text("界面由 Kyant0 / AndroidLiquidGlass 驱动。Android 13 及以上启用折射与模糊，更早版本使用实色外观。", Modifier.padding(top = 10.dp), fontSize = 12.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Kyant0/AndroidLiquidGlass"))) }, contentPadding = PaddingValues(0.dp)) { Text("查看开源项目  ↗", fontSize = 12.sp) }
-        Text("版本 ${BuildConfig.VERSION_NAME} · 无广告 · 无通讯录权限", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // 隐秘入口：连续点 7 次「版本」才弹出管理员验证，界面上不留任何开关。
+        Text("版本 ${BuildConfig.VERSION_NAME} · 无广告 · 无通讯录权限", Modifier.clickable { vm.adminVersionTap() }, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("支持文字、图片、文件及一对一音视频通话。图片按原始比例显示，多张图片叠成一张卡片且每张都显示缩略内容，上下左右滑动可切换。后台通知需要保持连接；被系统终止或强制停止后无法保证送达。卸载会清除本机身份。", Modifier.padding(top = 14.dp), fontSize = 11.sp, lineHeight = 19.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
