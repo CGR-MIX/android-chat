@@ -105,6 +105,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** AI 助手品牌、提问与管理员会话共用同一套 HTTP 客户端配置。 */
     private val aiClient by lazy { AiClient(address, client) }
     private val aiAvatars by lazy { AiAvatarStore(getApplication(), client) }
+    private val adminCredentials by lazy { AdminCredentialStore(getApplication()) }
     private var aiBrandingLoaded = false
     /** 「版本」连点计数：超时或成功进入后归零，不留下可见痕迹。 */
     private var versionTapCount = 0
@@ -842,13 +843,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         mutable.update { it.copy(admin = AdminMode.Gate, adminError = null, adminNotice = null) }
     }
 
+    /** 读取本机保存的管理员账号；密码经 Android Keystore 加密，Keystore 不可用时返回 null。 */
+    fun savedAdminCredentials(): Pair<String, String>? = adminCredentials.load()
+
+    fun hasSavedAdminCredentials(): Boolean = adminCredentials.hasSaved()
+
+    fun adminForgetCredentials() {
+        adminCredentials.clear()
+        showNotice("已清除本机保存的管理员账号")
+    }
     fun adminCancelGate() {
         if (state.value.adminBusy) return
         mutable.update { it.copy(admin = AdminMode.Closed, adminError = null) }
     }
 
     /** 用主站管理员账号验证；成功后面板直接复用后台返回的同一份配置。 */
-    fun adminLogin(email: String, password: String) {
+    fun adminLogin(email: String, password: String, remember: Boolean = true) {
         if (state.value.adminBusy) return
         if (email.isBlank() || password.isEmpty()) {
             mutable.update { it.copy(adminError = "请填写管理员邮箱与密码") }
@@ -859,6 +869,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         scope.launch {
             runCatching { aiClient.adminLogin(email, password) }
                 .onSuccess { payload ->
+                    // 记住账号时才写 Keystore 加密副本；取消勾选即刻清掉旧记录。
+                    if (remember) adminCredentials.save(email, password) else adminCredentials.clear()
                     mutable.update {
                         it.copy(admin = AdminMode.Open(parseAdminDashboard(payload)), adminBusy = false, adminError = null)
                     }
@@ -930,10 +942,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     val bytes = getApplication<Application>().contentResolver.openInputStream(uri)
                         ?.use { it.readBytes() }
                         ?: throw IOException("无法读取所选图片")
-                    if (bytes.size > 2 * 1024 * 1024) throw IOException("头像不能超过 2 MB")
+                    if (bytes.size > 8 * 1024 * 1024) throw IOException("头像不能超过 8 MB")
                     val mimeType = when {
                         bytes.size >= 4 && bytes[0] == 0x89.toByte() -> "image/png"
                         bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() -> "image/jpeg"
+                        bytes.size >= 6 && bytes[0] == 'G'.code.toByte() && bytes[1] == 'I'.code.toByte() -> "image/gif"
                         else -> "image/webp"
                     }
                     mimeType to bytes

@@ -97,6 +97,10 @@ class AiAvatarStore(
         if (bytes[0] == 0xff.toByte() && bytes[1] == 0xd8.toByte() && bytes[2] == 0xff.toByte()) {
             return "image/jpeg"
         }
+        // GIF 只取首帧显示（BitmapFactory 的行为），动图效果保留在网页端。
+        if (bytes[0] == 'G'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte()) {
+            return "image/gif"
+        }
         val riff = String(bytes, 0, 4, Charsets.ISO_8859_1) == "RIFF"
         val webp = String(bytes, 8, 4, Charsets.ISO_8859_1) == "WEBP"
         return if (riff && webp) "image/webp" else null

@@ -162,12 +162,16 @@ class AiClient(
         }
     private fun ensureSuccessful(response: Response) {
         if (response.isSuccessful) return
-        val message = runCatching {
-            JSONObject(response.body?.string().orEmpty()).optString("error")
-        }.getOrNull().orEmpty()
         if (response.code == 401 || response.code == 403) {
             cookies.clear()
         }
+        // 404 几乎只会发生在「服务端还是旧版本」时：把原因直接说清楚，别让用户去猜。
+        if (response.code == 404) {
+            throw IOException("接口不存在 (404)：服务端可能还没更新到支持该功能的版本。")
+        }
+        val message = runCatching {
+            JSONObject(response.body?.string().orEmpty()).optString("error")
+        }.getOrNull().orEmpty()
         throw IOException("请求失败 (" + response.code + ")：" + message.take(220).ifBlank { "服务暂不可用" })
     }
 }

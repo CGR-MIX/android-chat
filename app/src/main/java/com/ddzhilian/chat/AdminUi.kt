@@ -59,8 +59,12 @@ import org.json.JSONObject
 /** 密码验证对话框：只在连点「版本」7 次后出现，不提供任何常驻入口。 */
 @Composable
 internal fun AdminGateDialog(state: ChatState, vm: ChatViewModel) {
-    var email by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
+    // 只在对话框首次出现时解密一次已保存账号，避免每次重组都走 Keystore。
+    val saved = remember { vm.savedAdminCredentials() }
+    var email by rememberSaveable { mutableStateOf(saved?.first.orEmpty()) }
+    var password by rememberSaveable { mutableStateOf(saved?.second.orEmpty()) }
+    var remember by rememberSaveable { mutableStateOf(saved != null) }
+    var hasSaved by remember { mutableStateOf(saved != null) }
 
     AlertDialog(
         onDismissRequest = { if (!state.adminBusy) vm.adminCancelGate() },
@@ -68,7 +72,11 @@ internal fun AdminGateDialog(state: ChatState, vm: ChatViewModel) {
         text = {
             Column {
                 Text(
-                    "请输入主站管理员账号。会话只保存在本机内存，退出应用后需要重新验证。",
+                    if (hasSaved) {
+                        "本机已保存管理员账号，直接点「进入」即可。密码用系统密钥库加密存放。"
+                    } else {
+                        "请输入主站管理员账号。账号可选保存在本机，之后连点版本行即可免输入进入。"
+                    },
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -93,13 +101,31 @@ internal fun AdminGateDialog(state: ChatState, vm: ChatViewModel) {
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = remember, onCheckedChange = { remember = it }, enabled = !state.adminBusy)
+                    Text("记住账号密码", fontSize = 12.sp)
+                    if (hasSaved) {
+                        TextButton(
+                            onClick = {
+                                vm.adminForgetCredentials()
+                                hasSaved = false
+                                remember = false
+                                email = ""
+                                password = ""
+                            },
+                            enabled = !state.adminBusy,
+                        ) {
+                            Text("清除已保存", fontSize = 12.sp)
+                        }
+                    }
+                }
                 state.adminError?.let {
                     Text(it, Modifier.padding(top = 10.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = { vm.adminLogin(email, password) }, enabled = !state.adminBusy) {
+            TextButton(onClick = { vm.adminLogin(email, password, remember) }, enabled = !state.adminBusy) {
                 Text(if (state.adminBusy) "验证中…" else "进入")
             }
         },
@@ -254,7 +280,7 @@ internal fun AdminScreen(state: ChatState, vm: ChatViewModel) {
                 }
             }
 
-            AdminSection("AI 助手头像", "PNG / JPEG / WebP，最大 2 MB；与主站后台、网页聊天共用同一张。") {
+            AdminSection("AI 助手头像", "PNG / JPEG / WebP / GIF，最大 8 MB；与主站后台、网页聊天共用同一张。") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val bitmap = remember(state.aiAvatarRevision, state.ai.avatarUrl) { vm.aiAvatar() }
                     Box(
