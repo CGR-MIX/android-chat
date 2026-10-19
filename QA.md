@@ -187,3 +187,11 @@
 - 验证：`./gradlew :app:testDebugUnitTest` 通过（43 个用例，含新增 16 个 `MarkdownTest` 用例：行内样式、标点不被误吃、转义、列表续行、代码块与未闭合围栏、服务端富文本回复、纯文本降级）；`:app:lintDebug` 0 error（32 warning 全部为此前既有项，新文件 0 命中）；`:app:assembleDebug` 成功。
 - 未验证：**没有在模拟器/真机上做视觉确认**。本机 `adb` daemon 反复掉线，headless 模拟器启动后 adb 连接数秒内丢失，未能安装 APK 截图；因此气泡内代码块横向滚动、行内链接点击、深色模式与「减少透明效果」下的实际观感，以及长句换行后的气泡宽度，均未在设备上核对。
 - 未改动 `ddzhilian` 主仓库、线上服务与部署；本轮只改本仓库的 Kotlin 源码、测试与文档。
+
+## v1.6.2 发版：Markdown 富文本上线
+
+- 版本：`versionCode` 8 → 9，`versionName` 1.6.1 → 1.6.2。`npm run android:chat:check` BUILD SUCCESSFUL（43 个单测通过、Lint 0 error、独立 APK 生成）。
+- APK：`output/ddzhilian-chat-debug.apk`，67,044,480 字节，SHA-256 `6093c94cfabbae93e5a7a1e3762ae00c3c8cdd11db8eece5574f8d2b165d01ec`。`aapt2 dump badging` 核对包内为 `versionCode='9' versionName='1.6.2'`。
+- 发布：提交 `11b43fe chore(release): v1.6.2 (versionCode 9)` 与 annotated tag `v1.6.2` 均已推送；Release 附件上传为 `ddzhilian-chat-debug.apk`，页面 <https://github.com/CGR-MIX/android-chat/releases/tag/v1.6.2>（安装包仍不进仓库历史）。
+- 通道复查：匿名 `info/refs?service=git-upload-pack` 返回 200 且含 `refs/tags/v1.6.2`（更新通道可发现）；附件地址返回 200，落到 `release-assets.githubusercontent.com`，`Content-Length` 67,044,480 与本地一致，前 4 字节为 `PK` + `03 04`，整包 SHA-256 与本地完全相同。
+- 仍未做设备端视觉验证，限制同上节。建议在 1.6.1 上点一次「检查更新」验证下载安装链路，并顺手确认气泡内代码块与链接的实际表现。
