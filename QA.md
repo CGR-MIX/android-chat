@@ -232,3 +232,11 @@
 - 发布：annotated tag `v1.6.4` 已推送，Release 附件为 `ddzhilian-chat-debug.apk`（GitHub 登记的 digest 与本地 SHA-256 一致），页面 <https://github.com/CGR-MIX/android-chat/releases/tag/v1.6.4>；安装包仍不进仓库历史。
 - 通道复查：匿名 `info/refs?service=git-upload-pack` 返回 200 且含 `refs/tags/v1.6.4`；附件地址 302 跳到 `release-assets.githubusercontent.com` 后为 206，`Content-Type` 是 `application/vnd.android.package-archive`，前 4 字节 `50 4B 03 04`。
 - 仍未做设备端视觉验证（头像实际渲染、插入后光标位置、中文 IME 组合输入、长按手势与键盘弹出），限制同上。
+
+## 头像尺寸与形状（1.6.4 之后）
+
+- 现象：头像太小，而且看着不是圆的。
+- 原因：线上源图是 **320 × 426 的竖图**，`Image` 用默认的 `ContentScale.Fit` 塞进 18dp 方框后左右留白，再套圆形裁切只剩中间一条，视觉上就不像一个圆头像。
+- 修复：显示尺寸 18dp → **28dp**，长按触摸区 32dp → **40dp**；`Image` 改用 `ContentScale.Crop` 铺满圆形（竖图居中裁切）；无头像时的「AI」文字 8sp → 11sp；解码上限 128px → 256px（28dp 在 3x 屏约 84px，128 会发糊）；缓存文件名带 `-v2`，避免升级后继续复用旧的低清文件。
+- 验证：`npm run android:chat:check` BUILD SUCCESSFUL，48 个单测通过，Lint 0 error；APK SHA-256 `843f6f380e345b55ee8fbd2bd28abea8da775666b80d5719f09cfb74af2e5f42`（包内仍是 `11 / 1.6.4`）。
+- 未验证：设备上的实际观感与裁切位置（源图 320×426 裁成方形会切掉上下约 25%），需要真机确认头像主体是否被切到。
