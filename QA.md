@@ -240,3 +240,12 @@
 - 修复：显示尺寸 18dp → **28dp**，长按触摸区 32dp → **40dp**；`Image` 改用 `ContentScale.Crop` 铺满圆形（竖图居中裁切）；无头像时的「AI」文字 8sp → 11sp；解码上限 128px → 256px（28dp 在 3x 屏约 84px，128 会发糊）；缓存文件名带 `-v2`，避免升级后继续复用旧的低清文件。
 - 验证：`npm run android:chat:check` BUILD SUCCESSFUL，48 个单测通过，Lint 0 error；APK SHA-256 `843f6f380e345b55ee8fbd2bd28abea8da775666b80d5719f09cfb74af2e5f42`（包内仍是 `11 / 1.6.4`）。
 - 未验证：设备上的实际观感与裁切位置（源图 320×426 裁成方形会切掉上下约 25%），需要真机确认头像主体是否被切到。
+
+## v1.6.5 发版：头像放大并裁成圆形
+
+- 版本：`versionCode` 11 → 12，`versionName` 1.6.4 → 1.6.5；`npm run android:chat:check` BUILD SUCCESSFUL，48 个单测通过，Lint 0 error。`aapt2` 核对包内为 `versionCode='12' versionName='1.6.5'`。
+- 提交：`a2fec48`（头像 28dp + Crop 裁切 + 解码上限与缓存版本）、`055aa4d`（QA 记录）、`8d24335 chore(release): v1.6.5 (versionCode 12)`，均已推送。
+- APK：`output/ddzhilian-chat-debug.apk`，67,060,864 字节，SHA-256 `1e0619bff0bb07f48be6b963a26edc6e62fa27053be9ef3be07da874697b3ef0`。
+- 发布：annotated tag `v1.6.5` 已推送，Release 附件 `ddzhilian-chat-debug.apk`（GitHub 登记的 digest 与本地 SHA-256 一致），页面 <https://github.com/CGR-MIX/android-chat/releases/tag/v1.6.5>。
+- 通道复查：匿名 `info/refs?service=git-upload-pack` 返回 200 且含 `refs/tags/v1.6.5`；附件 302 跳到对象存储后为 206，`Content-Type` 为 `application/vnd.android.package-archive`，前 4 字节 `50 4B 03 04`。
+- 仍未在设备上确认实际观感（28dp 圆形头像的裁切位置、长按触摸区手感）；按 320×426 源图裁成方形会切掉上下各约 12%，若主体被切建议换成正方形头像。
