@@ -104,7 +104,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var pendingOpenId: String? = null
     /** AI 助手品牌、提问与管理员会话共用同一套 HTTP 客户端配置。 */
     private val aiClient by lazy { AiClient(address, client) }
-    private val aiAvatars by lazy { AiAvatarStore(getApplication(), client) }
+    // branding 里的头像地址是相对路径，用当前服务端根地址补全（lambda 而不是快照，避免换地址后过期）。
+    private val aiAvatars by lazy { AiAvatarStore(getApplication(), client) { address.http } }
     private val adminCredentials by lazy { AdminCredentialStore(getApplication()) }
     private var aiBrandingLoaded = false
     /** 「版本」连点计数：超时或成功进入后归零，不留下可见痕迹。 */

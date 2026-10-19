@@ -6,16 +6,23 @@ import android.graphics.BitmapFactory
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
 /**
  * 把 `/api/ai/avatar` 拉成聊天里用的圆头像。图片按 URL（含内容哈希）缓存到 cacheDir，
  * 所以后台换头像后新 URL 会自然重新下载；解码按需降采样，避免占内存。
+ *
+ * 注意：branding 返回的是 `/api/ai/avatar?v=…` 这种**相对路径**，而 OkHttp 只接受绝对地址。
+ * 必须先按服务端根地址补全，否则请求会在建 Request 时抛异常（被 runCatching 吞掉），
+ * 头像就永远退回「AI」文字圆标。
  */
 class AiAvatarStore(
     private val context: Context,
     private val client: OkHttpClient,
+    /** 服务端根地址；branding 的头像地址是相对路径，需要它来补全。 */
+    private val baseUrl: () -> HttpUrl?,
 ) {
     private val lock = Any()
     private val memory = mutableMapOf<String, Bitmap?>()
@@ -50,6 +57,7 @@ class AiAvatarStore(
         return bitmap
     }
 
+    /** 缓存文件名仍然按原始 avatarUrl 计算，绝对地址只用于发请求。 */
     private fun fileFor(avatarUrl: String): File? = runCatching {
         val directory = File(context.cacheDir, "ai-avatar")
         if (!directory.isDirectory && !directory.mkdirs()) {
@@ -59,7 +67,8 @@ class AiAvatarStore(
     }.getOrNull()
 
     private fun download(avatarUrl: String): Bitmap? {
-        val request = Request.Builder().url(avatarUrl).get().build()
+        val url = resolveAvatarUrl(avatarUrl, baseUrl()) ?: return null
+        val request = Request.Builder().url(url).get().build()
         return client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return@use null
             val bytes = response.body?.bytes() ?: return@use null
@@ -105,4 +114,18 @@ class AiAvatarStore(
         val webp = String(bytes, 8, 4, Charsets.ISO_8859_1) == "WEBP"
         return if (riff && webp) "image/webp" else null
     }
+}
+
+/**
+ * 服务端给的头像地址是相对路径（`/api/ai/avatar?v=…`，网页端靠同域解析）；
+ * 已经带 http/https 的原样使用，相对路径按服务端根地址补全。没有根地址时返回 null，
+ * 让界面回退到文字头像，而不是发一个注定失败的请求。
+ */
+internal fun resolveAvatarUrl(avatarUrl: String?, base: HttpUrl?): String? {
+    val trimmed = avatarUrl?.trim().orEmpty()
+    if (trimmed.isEmpty()) return null
+    if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+        return trimmed
+    }
+    return base?.resolve(trimmed)?.toString()
 }
