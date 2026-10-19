@@ -48,7 +48,7 @@ npm run android:chat:check
 - 通话期间 25 秒信令状态心跳、断线清理、会话过期重建；Android 14+ 麦克风 / 摄像头前台服务。
 - 可选的「后台消息与来电通知」：共享单一 WebSocket，常驻通知保持连接；不在锁屏展示聊天正文；初始历史不弹通知。点击消息进入房间，来电通知可拒绝或打开应用接听。
 - Dock 按住拖拽选择：玻璃胶囊跟手、轻微形变、标签预览及触觉反馈、松手吸附切换；拖出取消，支持关闭系统动画。
-- **AI 助手**：在房间输入 `@助手名称` 或后台配置的唤醒词（如 `@ai`）即可提问，规则与网页端一致（提及必须在开头，名称后跟空格、冒号或逗号）。名称、唤醒词、记忆轮数、System Prompt、供应商与助手头像全部来自主站管理员后台，App 与网页读写同一份服务端配置；回复由服务端以 `bot` 身份写入房间历史并广播，App 把富文本转成纯文本显示，并在等待时显示「AI 正在思考…」。
+ - **AI 助手**：在房间输入 `@助手名称` 或后台配置的唤醒词（如 `@ai`）即可提问，规则与网页端一致（提及必须在开头，名称后跟空格、冒号或逗号）。名称、唤醒词、记忆轮数、System Prompt、供应商与助手头像全部来自主站管理员后台，App 与网页读写同一份服务端配置；回复由服务端以 `bot` 身份写入房间历史并广播，App 把回复里的 Markdown 渲染成富文本气泡（标题、粗体/斜体/删除线、行内代码、代码块、列表、引用、分隔线、可点链接；未支持的语法原样显示），并在等待时显示「AI 正在思考…」。
 - **隐秘管理员模式**：设置页「版本」一行连点 7 次弹出密码验证，用主站管理员账号登录后进入面板，可改 AI 策略（名称/唤醒词/记忆轮数/System Prompt）、供应商与 API Key、历史暂存文件（附件列表、单条删除、全站清空）以及助手头像（PNG/JPEG/WebP/GIF，≤8 MB）。登录时勾选「记住账号密码」会把账号保存在本机（密码用 Android Keystore 的 AES/GCM 密钥加密，Keystore 不可用时放弃保存），之后连点版本行可直接进入；管理员会话 cookie 只保存在内存，杀进程即失效。非超级管理员账号进入后供应商与头像只读，避免清空线上密钥。
 
 ## 1.2.0 聊天体验补充
@@ -129,6 +129,8 @@ implementation("io.github.kyant0:backdrop:1.0.6")
 - `VoiceController.kt`：语音消息采集、播放与音频路由。
 - `LocalChatStore.kt`：身份隔离的本地 SQLite、偏好与附件暂存。
 - `AttachmentTransferService.kt`：附件接收前台服务及标准实时进度通知。
+ - `ChatMarkdown.kt` / `ChatMarkdownUi.kt`：聊天消息的 Markdown 子集解析（纯 Kotlin，可单测）与 Compose 富文本渲染；`plainChatText` 供会话预览、搜索结果和复制降级为纯文本。
+ - `app/src/test/java/com/ddzhilian/chat/MarkdownTest.kt`：16 个 Markdown 解析用例（行内样式、列表与续行、代码块、未闭合围栏、AI 富文本回复、纯文本降级与不吞字）。
 - `app/src/test/java/com/ddzhilian/chat/ChatProtocolTest.kt`：5 个协议测试。
 - `UpdateProtocol.kt` / `UpdateChannel.kt` / `UpdateUi.kt`：git 版本更新通道的协议解析、检查下载与设置页区块。
 - `app/src/test/java/com/ddzhilian/chat/UpdateProtocolTest.kt`：6 个更新通道测试（refs 广告、版本解析与比较、下载地址回退）。

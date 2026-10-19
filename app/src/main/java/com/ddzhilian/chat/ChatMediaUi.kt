@@ -413,7 +413,7 @@ fun MessageSearchDialog(s: ChatState, vm: ChatViewModel, onDismiss: () -> Unit) 
             androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 360.dp)) {
                 val messages = s.searchResults.filter { it.roomId == s.activeRoomId }
                 items(messages.size, key = { messages[it].id }) { i -> val message = messages[i]
-                    TextButton(onClick = { vm.openSearchResult(message); onDismiss() }) { Text(message.fileName ?: message.text, maxLines = 3) }
+                    TextButton(onClick = { vm.openSearchResult(message); onDismiss() }) { Text(message.fileName ?: plainChatText(message.text), maxLines = 3) }
                 }
             }
         }

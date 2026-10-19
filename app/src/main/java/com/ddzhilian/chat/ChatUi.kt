@@ -362,7 +362,7 @@ private fun RoomList(s: ChatState, vm: ChatViewModel, menus: GlassMenuController
             items(s.searchResults, key = { "search-" + it.id }) { message ->
                 TextButton(onClick = { vm.openSearchResult(message) }, modifier = Modifier.fillMaxWidth()) { Column(Modifier.fillMaxWidth()) {
                     Text(message.senderName + " · " + formatTime(message.createdAt), fontSize = 11.sp)
-                    Text(message.fileName ?: message.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(message.fileName ?: plainChatText(message.text), maxLines = 2, overflow = TextOverflow.Ellipsis)
                 } }
             }
         }
@@ -381,7 +381,9 @@ private fun RoomList(s: ChatState, vm: ChatViewModel, menus: GlassMenuController
                 Avatar(room.title(s.selfId), room.isPublic || room.isLan)
                 Column(Modifier.weight(1f).padding(start = 14.dp, end = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(room.title(s.selfId), fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(room.preview.ifBlank { if (room.isPublic) "进来坐坐，打个招呼吧" else "开始你们的对话" }, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    // 服务端预览是原始富文本，先收成一行纯文字，避免会话列表里露出标签和 Markdown 标记。
+                    val preview = remember(room.preview) { plainChatText(room.preview) }
+                    Text(preview.ifBlank { if (room.isPublic) "进来坐坐，打个招呼吧" else "开始你们的对话" }, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if ((s.unread[room.id] ?: 0) > 0) Badge { Text("未读") }
@@ -558,7 +560,7 @@ private fun MessageBubble(s: ChatState, message: Message, own: Boolean, vm: Chat
                         Text(message.fileName, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = color, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(formatBytes(message.size) + " · 点击打开", fontSize = 10.sp, color = color.copy(alpha = .78f))
                     }
-                } else Text(stripChatMarkup(message.text), fontSize = 16.sp, lineHeight = 24.sp, color = color)
+                } else MarkdownMessage(message.text, color)
             }
         }
         Text(deliveryLabel(message), Modifier.padding(horizontal = 4.dp, vertical = 5.dp), fontSize = 10.sp,

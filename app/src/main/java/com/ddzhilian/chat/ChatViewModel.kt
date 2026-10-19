@@ -362,7 +362,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun back() { voice.stop(); refreshJob?.cancel(); mutable.update { it.copy(activeRoomId = null, loading = false) } }
     /** Copies the message text (or file name) to the clipboard from the glass long-press menu. */
     fun copyMessage(message: Message) {
-        val text = message.fileName ?: message.text
+        // 复制给的是气泡里看到的纯文字，而不是富文本 / Markdown 源码。
+        val text = message.fileName ?: plainChatText(message.text)
         if (text.isBlank()) return
         val clipboard = getApplication<Application>().getSystemService(android.content.ClipboardManager::class.java)
         clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("点点直连", text))

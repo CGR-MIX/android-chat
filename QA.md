@@ -178,3 +178,12 @@
 - 版本：`versionCode` 5 → 6，`versionName` 1.4.0 → 1.5.0。仓库已改为公开，匿名 refs 端点在发版前实测返回 200，因此这次发版同时让更新通道真正可用。
 - `npm run android:chat:check`：BUILD SUCCESSFUL；21 个单测全部通过；Lint 0 error。APK：`output/ddzhilian-chat-debug.apk`，66,913,408 字节，SHA-256 `76a4661922278decb797b718401cf72d831b0369c7c0cade0fbd0a8cfec53fc0`。
 - 发布动作：`git tag v1.5.0 && git push origin v1.5.0`，再把上面的 APK 作为该 tag 的 Release 附件上传（安装包不进仓库历史）。只推 tag 不上传附件时，App 能发现新版本但下载会失败。
+
+## Markdown 富文本显示适配
+
+- 背景：服务端保存 AI 回复时只做 HTML 转义（`server/src/index.ts` 的 `buildAiBotReplyText` / `plainTextToRichText`），Markdown 标记原样留在正文里；App 此前只用 `stripChatMarkup` 去标签，因此气泡里会直接看到 `**粗体**`、`### 标题`、围栏代码块这些源文本。
+- 实现：新增 `ChatMarkdown.kt`（纯 Kotlin 解析：标题、段落、有序/无序列表与懒续行、引用、围栏代码块、分隔线，行内粗体/斜体/粗斜体/删除线/行内代码/`[文字](链接)`/裸链接/反斜杠转义；未支持的表格等语法原样保留）与 `ChatMarkdownUi.kt`（Compose 渲染：标题分级字号、列表符号与序号、引用底色、等宽代码块横向滚动、分隔线、链接下划线且可点）。
+- 接入点：聊天气泡（`ChatUi.kt` 的 `MessageBubble`）、会话列表预览、会话内搜索结果预览、长按「复制」（都经 `plainChatText` 降级为纯文本，避免露出标签和 Markdown 标记）。
+- 验证：`./gradlew :app:testDebugUnitTest` 通过（43 个用例，含新增 16 个 `MarkdownTest` 用例：行内样式、标点不被误吃、转义、列表续行、代码块与未闭合围栏、服务端富文本回复、纯文本降级）；`:app:lintDebug` 0 error（32 warning 全部为此前既有项，新文件 0 命中）；`:app:assembleDebug` 成功。
+- 未验证：**没有在模拟器/真机上做视觉确认**。本机 `adb` daemon 反复掉线，headless 模拟器启动后 adb 连接数秒内丢失，未能安装 APK 截图；因此气泡内代码块横向滚动、行内链接点击、深色模式与「减少透明效果」下的实际观感，以及长句换行后的气泡宽度，均未在设备上核对。
+- 未改动 `ddzhilian` 主仓库、线上服务与部署；本轮只改本仓库的 Kotlin 源码、测试与文档。
