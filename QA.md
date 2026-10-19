@@ -204,4 +204,22 @@
 - 实现（界面）：助手消息旁的头像触摸区放大到 32dp（头像本身仍是 18dp，视觉位置基本不变），长按补 `@名称 ` 并聚焦输入框、弹出键盘；语音模式下先停止录音并切回打字，避免插入内容看不见；输入框加了 `focusRequester`。
 - 验证：`npm run android:chat:check` BUILD SUCCESSFUL；44 个单测全部通过（`AiMentionTest` 新增 `appendAiMention` 用例：空草稿、已有文字、已有尾随空格、已提及同一助手、提到别的设备、名称首尾空格、空名称）；Lint 0 error。
 - 未验证：长按手势与键盘弹出没有在设备上确认（本机 adb 限制同前）；插入的名称依赖 `/api/ai/branding` 可达，离线冷启动时会回退到内置默认名（此时插入的不是「鲸鱼娘」）。
- - 版本：`versionCode` 9 → 10，`versionName` 1.6.2 → 1.6.3；`npm run android:chat:check` BUILD SUCCESSFUL，产物 67,060,864 字节，SHA-256 `66be002d5e0b3b273342d9d436b462ca9a757267d556e019f62fe5f789603832`（`aapt2` 核对包内为 `versionCode='10' versionName='1.6.3'`），发版细节见下节。
+- 版本：`versionCode` 9 → 10，`versionName` 1.6.2 → 1.6.3；`npm run android:chat:check` BUILD SUCCESSFUL，产物 67,060,864 字节，SHA-256 `66be002d5e0b3b273342d9d436b462ca9a757267d556e019f62fe5f789603832`（`aapt2` 核对包内为 `versionCode='10' versionName='1.6.3'`），发版细节见下节。
+
+## 助手头像不显示：根因与修复
+
+- 现象：房间里的助手消息只有「AI」文字圆标，后台配置的头像从没出现（网页端正常）。
+- 线上实测（2026-10-19）：`GET /api/ai/branding` 返回 `aiName:"鲸鱼娘"`、`wakeWords:["大肥鱼","大鲸鱼"]`、`avatarUrl:"/api/ai/avatar?v=b3537b39"` —— 头像是**相对路径**（网页端靠同域解析）；`GET /api/ai/avatar?v=b3537b39` 返回 200 `image/gif`（3,325,320 字节），说明服务端数据正常。
+- 根因：`AiAvatarStore.download()` 直接把 `/api/ai/avatar?v=…` 交给 `Request.Builder().url(...)`，OkHttp 只接受绝对地址，会当场抛 `IllegalArgumentException`，被 `runCatching` 吞掉后返回 null，界面就一直回退文字头像。
+- 修复：`AiAvatarStore` 增加服务端根地址（传 lambda，跟随当前 `address`，不存快照），下载前用新增的 `resolveAvatarUrl()` 补全相对路径；已带 http/https 的原样使用；磁盘缓存文件名仍按原始 `avatarUrl` 计算，所以后台换头像（`?v=` 变化）会自然重新下载。
+- 验证：新增 `AvatarUrlTest`（4 个用例：相对路径补全、绝对地址原样、首尾空格、无根地址/空路径返回 null）；48 个单测全部通过，Lint 0 error，`assembleDebug` 成功。
+- 未验证：设备端是否真正显示头像（本机 adb 限制同前），以及 3.3 MB GIF 在慢网络下的下载耗时。
+- 状态：本地 `output/ddzhilian-chat-debug.apk` 已含该修复（连同下面的光标修复：67,703,528 字节，SHA-256 `1173814d4d58621b99da9f6210b7376d8b1d3b0bea157d0c2f6048668276d645`，包内版本仍是 `10 / 1.6.3`），与已发布的 v1.6.3 附件（`66be002d…`）不是同一个包，尚未发版。
+
+## 长按插入 @ 后光标停在最前面
+
+- 现象：长按助手头像插入 `@鲸鱼娘 ` 后，光标停在 `@` 之前而不是末尾，得手动点到末尾才能接着打字。
+- 根因：输入框用的是 `BasicTextField(String, onValueChange)` 重载，它内部保留上一份 `selection`。空草稿时 selection 是 0，外部把 value 改成 `@鲸鱼娘 ` 后文本换了、selection 仍被钳在 0，光标就落在最前面。
+- 修复：草稿改用受控的 `TextFieldValue`（`draftField`）。`onValueChange` 同时更新 field 与 `vm.draft`；`LaunchedEffect(s.activeRoomId, s.draft)` 只在「field 文本与草稿不一致」时重建 field 并把 selection 放到末尾，所以自己打字（含中文 IME 组合输入）不会被打断，只有长按插入、发送后清空这类外部改动才移动光标；切换房间时也直接落在草稿末尾。
+- 验证：`npm run android:chat:check` BUILD SUCCESSFUL；48 个单测全部通过，Lint 0 error。
+- 未验证：设备端光标位置与中文输入法组合输入未实测（本机 adb 限制同前）。
