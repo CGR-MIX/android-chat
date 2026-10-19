@@ -10,8 +10,8 @@ android {
         applicationId = "com.ddzhilian.chat"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "1.6.3"
+        versionCode = 11
+        versionName = "1.6.4"
     }
     buildFeatures { compose = true; buildConfig = true }
     buildTypes {
