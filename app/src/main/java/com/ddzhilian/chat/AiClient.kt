@@ -83,7 +83,7 @@ class AiClient(
     suspend fun branding(): AiBranding {
         val request = Request.Builder().url(address.api("api/ai/branding")).get().build()
         return client.newCall(request).awaitResponse().use { response ->
-            ensureSuccessful(response)
+            ensureSuccessful(response, request)
             parseAiBranding(JSONObject(response.body?.string().orEmpty().ifBlank { "{}" }))
         }
     }
@@ -102,7 +102,7 @@ class AiClient(
             .post(payload.toString().toRequestBody(aiJsonMediaType))
             .build()
         return client.newCall(request).awaitResponse().use { response ->
-            ensureSuccessful(response)
+            ensureSuccessful(response, request)
             val body = JSONObject(response.body?.string().orEmpty().ifBlank { "{}" })
             body.optString("response").trim().ifEmpty { throw IOException("AI 返回了空结果。") }
         }
@@ -157,17 +157,18 @@ class AiClient(
 
     private suspend fun adminExecute(request: Request): JSONObject =
         adminClient.newCall(request).awaitResponse().use { response ->
-            ensureSuccessful(response)
+            ensureSuccessful(response, request)
             JSONObject(response.body?.string().orEmpty().ifBlank { "{}" })
         }
-    private fun ensureSuccessful(response: Response) {
+    private fun ensureSuccessful(response: Response, request: Request? = null) {
         if (response.isSuccessful) return
         if (response.code == 401 || response.code == 403) {
             cookies.clear()
         }
-        // 404 几乎只会发生在「服务端还是旧版本」时：把原因直接说清楚，别让用户去猜。
+        // 带上方法 + 路径：404 时能直接看出是 app 连错了地址，还是那个后端确实没有这个接口。
+        val where = request?.let { "（" + it.method + " " + it.url.encodedPath + "）" }.orEmpty()
         if (response.code == 404) {
-            throw IOException("接口不存在 (404)：服务端可能还没更新到支持该功能的版本。")
+            throw IOException("接口不存在 (404)" + where + "：这个后端没有该接口，可能版本较旧或地址不对。")
         }
         val message = runCatching {
             JSONObject(response.body?.string().orEmpty()).optString("error")
