@@ -223,3 +223,12 @@
 - 修复：草稿改用受控的 `TextFieldValue`（`draftField`）。`onValueChange` 同时更新 field 与 `vm.draft`；`LaunchedEffect(s.activeRoomId, s.draft)` 只在「field 文本与草稿不一致」时重建 field 并把 selection 放到末尾，所以自己打字（含中文 IME 组合输入）不会被打断，只有长按插入、发送后清空这类外部改动才移动光标；切换房间时也直接落在草稿末尾。
 - 验证：`npm run android:chat:check` BUILD SUCCESSFUL；48 个单测全部通过，Lint 0 error。
 - 未验证：设备端光标位置与中文输入法组合输入未实测（本机 adb 限制同前）。
+
+## v1.6.4 发版：头像、光标与 404 提示
+
+- 版本：`versionCode` 10 → 11，`versionName` 1.6.3 → 1.6.4；`npm run android:chat:check` BUILD SUCCESSFUL，48 个单测全部通过，Lint 0 error。`aapt2` 核对包内为 `versionCode='11' versionName='1.6.4'`。
+- 提交：`6cc0ab9`（头像相对路径）、`fd611f1`（插入后光标）、`5b9961f`（404 提示带路径）、`a8964c7`（QA 记录）、`780b650 chore(release): v1.6.4 (versionCode 11)`，均已推送。
+- APK：`output/ddzhilian-chat-debug.apk`，67,060,864 字节，SHA-256 `d3203c1c36ec736ec3929062019c6b44a2cff12a782fdcbc75f769c2049e9b1e`。
+- 发布：annotated tag `v1.6.4` 已推送，Release 附件为 `ddzhilian-chat-debug.apk`（GitHub 登记的 digest 与本地 SHA-256 一致），页面 <https://github.com/CGR-MIX/android-chat/releases/tag/v1.6.4>；安装包仍不进仓库历史。
+- 通道复查：匿名 `info/refs?service=git-upload-pack` 返回 200 且含 `refs/tags/v1.6.4`；附件地址 302 跳到 `release-assets.githubusercontent.com` 后为 206，`Content-Type` 是 `application/vnd.android.package-archive`，前 4 字节 `50 4B 03 04`。
+- 仍未做设备端视觉验证（头像实际渲染、插入后光标位置、中文 IME 组合输入、长按手势与键盘弹出），限制同上。
