@@ -39,6 +39,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
@@ -93,6 +95,14 @@ fun ChatApp(vm: ChatViewModel) {
         var imagePreview by remember { mutableStateOf<List<Uri>>(emptyList()) }
         var plusOpen by remember { mutableStateOf(false) }
         var voiceMode by rememberSaveable { mutableStateOf(false) }
+        // 草稿用 TextFieldValue 受控：长按头像插入、发送后清空这类「外部改动」要把光标放到末尾，
+        // 否则 String 版本会保留原 selection（空输入框就是 0），光标停在插入内容的前面。
+        // 切房间时把光标放到草稿末尾，和「继续往下写」的预期一致。
+        var draftField by remember(s.activeRoomId) { mutableStateOf(TextFieldValue(s.draft, selection = TextRange(s.draft.length))) }
+        LaunchedEffect(s.activeRoomId, s.draft) {
+            // 自己打字时 field 已经是新值，这里不会打断输入法；只有外部改动才重置光标。
+            if (draftField.text != s.draft) draftField = TextFieldValue(s.draft, selection = TextRange(s.draft.length))
+        }
         var choosingCall by remember { mutableStateOf<Boolean?>(null) }
         var pendingCall by remember { mutableStateOf<Pair<Peer, Boolean>?>(null) }
         val context = LocalContext.current
@@ -252,10 +262,10 @@ fun ChatApp(vm: ChatViewModel) {
                     Row(Modifier.weight(1f).glass(backdrop, s.reduceTransparency).heightIn(min = ControlHeight).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { voiceMode = !voiceMode; vm.voice.finishRecording(false) }) { Icon(if (voiceMode) Icons.Rounded.Keyboard else Icons.Rounded.Mic, if (voiceMode) "切换打字" else "切换语音消息") }
                         if (voiceMode) VoiceRecordButton(s.activeRoomId!!, vm, Modifier.weight(1f).align(Alignment.CenterVertically))
-                        else BasicTextField(s.draft, vm::draft, Modifier.weight(1f).heightIn(min = 48.dp, max = 144.dp).padding(vertical = 13.dp, horizontal = 3.dp).focusRequester(inputFocus),
+                        else BasicTextField(draftField, { value -> draftField = value; vm.draft(value.text) }, Modifier.weight(1f).heightIn(min = 48.dp, max = 144.dp).padding(vertical = 13.dp, horizontal = 3.dp).focusRequester(inputFocus),
                             textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp, lineHeight = 22.sp), maxLines = 5,
                             cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
-                            decorationBox = { inner -> Box { if (s.draft.isEmpty()) Text(if (s.connected) "聊点什么…" else "离线，发送后联网自动重试", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp); inner() } })
+                            decorationBox = { inner -> Box { if (draftField.text.isEmpty()) Text(if (s.connected) "聊点什么…" else "离线，发送后联网自动重试", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp); inner() } })
                         FilledIconButton(onClick = vm::sendText, enabled = !voiceMode && attachable && s.draft.isNotBlank(), modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Rounded.ArrowUpward, "发送消息")
                         }
