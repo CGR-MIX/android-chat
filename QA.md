@@ -195,3 +195,13 @@
 - 发布：提交 `11b43fe chore(release): v1.6.2 (versionCode 9)` 与 annotated tag `v1.6.2` 均已推送；Release 附件上传为 `ddzhilian-chat-debug.apk`，页面 <https://github.com/CGR-MIX/android-chat/releases/tag/v1.6.2>（安装包仍不进仓库历史）。
 - 通道复查：匿名 `info/refs?service=git-upload-pack` 返回 200 且含 `refs/tags/v1.6.2`（更新通道可发现）；附件地址返回 200，落到 `release-assets.githubusercontent.com`，`Content-Length` 67,044,480 与本地一致，前 4 字节为 `PK` + `03 04`，整包 SHA-256 与本地完全相同。
 - 仍未做设备端视觉验证，限制同上节。建议在 1.6.1 上点一次「检查更新」验证下载安装链路，并顺手确认气泡内代码块与链接的实际表现。
+
+## 长按助手头像 @ 助手
+
+- 需求确认：服务端后台已把助手名/唤醒词配成「鲸鱼娘」，因此 App 端只需跟随 `/api/ai/branding` 返回值，不另起一套名字；长按头像插入的文本也取服务端返回的助手名，避免插入了服务端不认的提及。
+- 实现（协议层）：`appendAiMention(draft, name)`（`ChatProtocol.kt`）把 `@名称 ` 补到草稿末尾 —— 空草稿直接写提及、普通草稿先补一个空格、已经以同一个名字开头时只补分隔空格不重复叠 `@`、名称为空时原样返回。
+- 实现（状态层）：`ChatViewModel` 抽出 `applyBranding`，新增 `aiMentionName()`（没拉到过配置就先等 4 秒取一次，超时或失败回退当前值）与 `mentionAi()`（改当前房间草稿并返回名称）。
+- 实现（界面）：助手消息旁的头像触摸区放大到 32dp（头像本身仍是 18dp，视觉位置基本不变），长按补 `@名称 ` 并聚焦输入框、弹出键盘；语音模式下先停止录音并切回打字，避免插入内容看不见；输入框加了 `focusRequester`。
+- 验证：`npm run android:chat:check` BUILD SUCCESSFUL；44 个单测全部通过（`AiMentionTest` 新增 `appendAiMention` 用例：空草稿、已有文字、已有尾随空格、已提及同一助手、提到别的设备、名称首尾空格、空名称）；Lint 0 error。
+- 未验证：长按手势与键盘弹出没有在设备上确认（本机 adb 限制同前）；插入的名称依赖 `/api/ai/branding` 可达，离线冷启动时会回退到内置默认名（此时插入的不是「鲸鱼娘」）。
+ - 版本：`versionCode` 9 → 10，`versionName` 1.6.2 → 1.6.3；`npm run android:chat:check` BUILD SUCCESSFUL，产物 67,060,864 字节，SHA-256 `66be002d5e0b3b273342d9d436b462ca9a757267d556e019f62fe5f789603832`（`aapt2` 核对包内为 `versionCode='10' versionName='1.6.3'`），发版细节见下节。

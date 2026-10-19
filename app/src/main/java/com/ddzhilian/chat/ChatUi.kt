@@ -35,8 +35,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
@@ -59,6 +62,7 @@ import com.ddzhilian.chat.liquid.LiquidButton
 import com.ddzhilian.chat.liquid.LiquidToggle
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.launch
 
 private val Pine = Color(0xFF315F50)
 private val Paper = Color(0xFFF0F3EF)
@@ -142,6 +146,22 @@ fun ChatApp(vm: ChatViewModel) {
             saveAttachment(message)
         }
 
+        // 长按助手头像会补 `@名称 `，这里统一控制输入框焦点与键盘。
+        val inputFocus = remember { FocusRequester() }
+        val keyboard = LocalSoftwareKeyboardController.current
+        val inputScope = rememberCoroutineScope()
+        fun mentionAi() {
+            inputScope.launch {
+                // 语音模式下先把录音收掉并切回输入框，否则插入的草稿看不见。
+                if (voiceMode) { voiceMode = false; vm.voice.finishRecording(false) }
+                vm.mentionAi()
+                // 等一帧让输入框真正挂载，再要焦点；失败也不影响草稿已经插入。
+                withFrameNanos { }
+                runCatching { inputFocus.requestFocus() }
+                keyboard?.show()
+            }
+        }
+
         val snackbar = remember { SnackbarHostState() }
         LaunchedEffect(s.error, s.notice) {
             val text = s.error ?: s.notice
@@ -171,7 +191,7 @@ fun ChatApp(vm: ChatViewModel) {
                         else -> Settings(s, vm, dark)
                     }
                 } else {
-                    Conversation(s, vm, menus, onDownload = ::openAttachment)
+                    Conversation(s, vm, menus, onDownload = ::openAttachment, onMentionAi = ::mentionAi)
                 }
             }
             Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(horizontal = 18.dp, vertical = 10.dp)
@@ -232,7 +252,7 @@ fun ChatApp(vm: ChatViewModel) {
                     Row(Modifier.weight(1f).glass(backdrop, s.reduceTransparency).heightIn(min = ControlHeight).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { voiceMode = !voiceMode; vm.voice.finishRecording(false) }) { Icon(if (voiceMode) Icons.Rounded.Keyboard else Icons.Rounded.Mic, if (voiceMode) "切换打字" else "切换语音消息") }
                         if (voiceMode) VoiceRecordButton(s.activeRoomId!!, vm, Modifier.weight(1f).align(Alignment.CenterVertically))
-                        else BasicTextField(s.draft, vm::draft, Modifier.weight(1f).heightIn(min = 48.dp, max = 144.dp).padding(vertical = 13.dp, horizontal = 3.dp),
+                        else BasicTextField(s.draft, vm::draft, Modifier.weight(1f).heightIn(min = 48.dp, max = 144.dp).padding(vertical = 13.dp, horizontal = 3.dp).focusRequester(inputFocus),
                             textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp, lineHeight = 22.sp), maxLines = 5,
                             cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
                             decorationBox = { inner -> Box { if (s.draft.isEmpty()) Text(if (s.connected) "聊点什么…" else "离线，发送后联网自动重试", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp); inner() } })
@@ -461,7 +481,7 @@ private fun groupImages(newestFirst: List<Message>): List<MessageRow> = buildLis
 }
 
 @Composable
-private fun Conversation(s: ChatState, vm: ChatViewModel, menus: GlassMenuController, onDownload: (Message) -> Unit) {
+private fun Conversation(s: ChatState, vm: ChatViewModel, menus: GlassMenuController, onDownload: (Message) -> Unit, onMentionAi: () -> Unit) {
     val listState = rememberLazyListState()
     val newestFirst = s.messages.asReversed()
     val rows = remember(newestFirst) { groupImages(newestFirst) }
@@ -485,7 +505,7 @@ private fun Conversation(s: ChatState, vm: ChatViewModel, menus: GlassMenuContro
                 if (row.messages.any { it.id == s.firstUnreadId }) TextButton(onClick = vm::locateFirstUnread, modifier = Modifier.fillMaxWidth()) { Text("未读消息 · 定位最早未读") }
                 val single = row.messages.singleOrNull()
                 if (row.messages.first().isImage) ImageStackBubble(row.messages, s, vm, menus, onDownload) { galleryId = it }
-                else if (single != null) MessageBubble(s, single, single.senderId == s.selfId, vm, menus, onDownload) { galleryId = single.id }
+                else if (single != null) MessageBubble(s, single, single.senderId == s.selfId, vm, menus, onDownload, onMentionAi) { galleryId = single.id }
             }
         }
         if (s.aiThinkingRoom != null && s.aiThinkingRoom == s.activeRoomId) item {
@@ -522,23 +542,33 @@ private fun ImageStackBubble(images: List<Message>, s: ChatState, vm: ChatViewMo
 }
 
 @Composable
-private fun MessageBubble(s: ChatState, message: Message, own: Boolean, vm: ChatViewModel, menus: GlassMenuController, onDownload: (Message) -> Unit, onImage: () -> Unit) {
+private fun MessageBubble(s: ChatState, message: Message, own: Boolean, vm: ChatViewModel, menus: GlassMenuController, onDownload: (Message) -> Unit, onMentionAi: () -> Unit, onImage: () -> Unit) {
     var anchor by remember(message.id) { mutableStateOf(Rect.Zero) }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (own) Alignment.End else Alignment.Start) {
         if (!own) {
             val bot = message.senderId == AI_BOT_DEVICE_ID
-            Row(Modifier.padding(start = 5.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            // 头像同时是「@助手」入口：长按把 `@名称 ` 补进输入框。触摸区放大到 32dp，头像仍是 18dp。
+            Row(Modifier.padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (bot) {
                     // 后台配了头像就画头像，否则退回「AI」小圆标；两处都跟主站同一份配置。
                     val avatar = remember(s.aiAvatarRevision) { vm.aiAvatar() }
                     Box(
-                        Modifier.size(18.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant),
+                        Modifier.size(32.dp).clip(CircleShape).combinedClickable(
+                            onLongClickLabel = "提及 " + s.ai.name,
+                            onLongClick = onMentionAi,
+                            onClick = {},
+                        ),
                         contentAlignment = Alignment.Center,
                     ) {
-                        if (avatar != null) Image(avatar.asImageBitmap(), null, Modifier.fillMaxSize())
-                        else Text("AI", fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                        Box(
+                            Modifier.size(18.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (avatar != null) Image(avatar.asImageBitmap(), null, Modifier.fillMaxSize())
+                            else Text("AI", fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
-                    Spacer(Modifier.width(5.dp))
+                    Spacer(Modifier.width(1.dp))
                 }
                 Text(
                     if (bot) s.ai.name else message.senderName,

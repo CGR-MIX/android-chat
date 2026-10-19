@@ -168,3 +168,24 @@ fun stripChatMarkup(raw: String): String {
 
     return text.replace(aiHtmlBlankLines, "\n\n").trim()
 }
+
+/**
+ * 把「@助手名 」补到草稿末尾（长按助手头像用）。
+ * 草稿开头已经提过同一个名字时只补一个分隔空格，不重复叠 `@`；名称为空时原样返回。
+ */
+fun appendAiMention(draft: String, name: String): String {
+    val target = name.trim()
+    if (target.isEmpty()) return draft
+    val mention = "@" + target
+    val started = draft.trimStart()
+    if (started.startsWith(mention)) {
+        val next = started.getOrNull(mention.length)
+        return if (next != null && next in AI_MENTION_SEPARATORS) draft else draft.trimEnd() + " "
+    }
+    val prefix = when {
+        draft.isBlank() -> ""
+        draft.last().isWhitespace() -> draft
+        else -> draft + " "
+    }
+    return prefix + mention + " "
+}

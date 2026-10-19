@@ -822,13 +822,36 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (aiBrandingLoaded && !force) return
         scope.launch {
             val branding = runCatching { aiClient.branding() }.getOrNull() ?: return@launch
-            aiBrandingLoaded = true
-            mutable.update { it.copy(ai = branding) }
-            if (branding.avatarUrl != null) {
-                aiAvatars.load(branding.avatarUrl)
-                mutable.update { it.copy(aiAvatarRevision = it.aiAvatarRevision + 1) }
-            }
+            applyBranding(branding)
         }
+    }
+
+    private suspend fun applyBranding(branding: AiBranding) {
+        aiBrandingLoaded = true
+        mutable.update { it.copy(ai = branding) }
+        if (branding.avatarUrl != null) {
+            aiAvatars.load(branding.avatarUrl)
+            mutable.update { it.copy(aiAvatarRevision = it.aiAvatarRevision + 1) }
+        }
+    }
+
+    /** 长按助手头像要用的名称：没拉到过配置就先等一次，超时或失败回退当前值。 */
+    suspend fun aiMentionName(): String {
+        if (!aiBrandingLoaded) {
+            val branding = withTimeoutOrNull(4_000) { runCatching { aiClient.branding() }.getOrNull() }
+            if (branding != null) applyBranding(branding)
+        }
+        return state.value.ai.name.ifBlank { DEFAULT_AI_NAME }
+    }
+
+    /**
+     * 长按助手头像：把 `@名称 ` 补到当前房间草稿末尾，返回插入用的名称。
+     * 不在房间里时只返回名称，不改草稿。
+     */
+    suspend fun mentionAi(): String {
+        val name = aiMentionName()
+        if (state.value.activeRoomId != null) draft(appendAiMention(state.value.draft, name))
+        return name
     }
 
     /** 设置页「版本」行连点 7 次进入管理员验证；间隔超过 3 秒重新计数。 */

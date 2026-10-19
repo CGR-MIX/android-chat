@@ -64,4 +64,20 @@ class AiMentionTest {
         assertEquals(DEFAULT_AI_WAKE_WORDS, parsed.wakeWords)
         assertNull(parsed.avatarUrl)
     }
+
+    @Test
+    fun appendsMentionToDraft() {
+        assertEquals("@鲸鱼娘 ", appendAiMention("", "鲸鱼娘"))
+        assertEquals("@鲸鱼娘 ", appendAiMention("   ", "鲸鱼娘"))
+        assertEquals("你好 @鲸鱼娘 ", appendAiMention("你好", "鲸鱼娘"))
+        assertEquals("你好 @鲸鱼娘 ", appendAiMention("你好 ", "鲸鱼娘"))
+        // 已经以同一个助手开头时只补分隔空格，不重复叠 `@`。
+        assertEquals("@鲸鱼娘 讲个笑话", appendAiMention("@鲸鱼娘 讲个笑话", "鲸鱼娘"))
+        assertEquals("@鲸鱼娘 ", appendAiMention("@鲸鱼娘", "鲸鱼娘"))
+        // 提到别的设备不挡住本次插入；名称前后空格会被修剪。
+        assertEquals("@小明 在吗 @鲸鱼娘 ", appendAiMention("@小明 在吗", "鲸鱼娘"))
+        assertEquals(" 你好 @鲸鱼娘 ", appendAiMention(" 你好", " 鲸鱼娘 "))
+        // 没有可用的助手名时原样返回。
+        assertEquals("原样", appendAiMention("原样", "   "))
+    }
 }
