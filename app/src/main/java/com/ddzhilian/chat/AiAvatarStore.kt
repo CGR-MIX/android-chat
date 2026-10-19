@@ -10,6 +10,9 @@ import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
+/** 解码参数变了就换一代缓存文件名，避免旧的低清晰度文件继续被复用。 */
+private const val AVATAR_CACHE_VERSION = 2
+
 /**
  * 把 `/api/ai/avatar` 拉成聊天里用的圆头像。图片按 URL（含内容哈希）缓存到 cacheDir，
  * 所以后台换头像后新 URL 会自然重新下载；解码按需降采样，避免占内存。
@@ -63,7 +66,7 @@ class AiAvatarStore(
         if (!directory.isDirectory && !directory.mkdirs()) {
             return null
         }
-        File(directory, "${avatarUrl.hashCode().toUInt().toString(16)}.img")
+        File(directory, "${avatarUrl.hashCode().toUInt().toString(16)}-v$AVATAR_CACHE_VERSION.img")
     }.getOrNull()
 
     private fun download(avatarUrl: String): Bitmap? {
@@ -84,8 +87,9 @@ class AiAvatarStore(
         BitmapFactory.decodeFile(file.path, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
+        // 聊天里的头像按 28dp 画（3x 屏约 84px），上限留到 256px 才够清晰，又不至于吃掉内存。
         var sample = 1
-        while (bounds.outWidth / sample > 128 || bounds.outHeight / sample > 128) {
+        while (bounds.outWidth / sample > 256 || bounds.outHeight / sample > 256) {
             sample *= 2
         }
 

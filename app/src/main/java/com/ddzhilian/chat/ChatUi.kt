@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.focus.FocusRequester
@@ -557,13 +558,13 @@ private fun MessageBubble(s: ChatState, message: Message, own: Boolean, vm: Chat
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (own) Alignment.End else Alignment.Start) {
         if (!own) {
             val bot = message.senderId == AI_BOT_DEVICE_ID
-            // 头像同时是「@助手」入口：长按把 `@名称 ` 补进输入框。触摸区放大到 32dp，头像仍是 18dp。
+            // 头像同时是「@助手」入口：长按把 `@名称 ` 补进输入框。触摸区 40dp，头像本体 28dp。
             Row(Modifier.padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (bot) {
                     // 后台配了头像就画头像，否则退回「AI」小圆标；两处都跟主站同一份配置。
                     val avatar = remember(s.aiAvatarRevision) { vm.aiAvatar() }
                     Box(
-                        Modifier.size(32.dp).clip(CircleShape).combinedClickable(
+                        Modifier.size(40.dp).clip(CircleShape).combinedClickable(
                             onLongClickLabel = "提及 " + s.ai.name,
                             onLongClick = onMentionAi,
                             onClick = {},
@@ -571,11 +572,16 @@ private fun MessageBubble(s: ChatState, message: Message, own: Boolean, vm: Chat
                         contentAlignment = Alignment.Center,
                     ) {
                         Box(
-                            Modifier.size(18.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant),
+                            Modifier.size(28.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant),
                             contentAlignment = Alignment.Center,
                         ) {
-                            if (avatar != null) Image(avatar.asImageBitmap(), null, Modifier.fillMaxSize())
-                            else Text("AI", fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                            if (avatar != null) {
+                                // Crop 而不是默认的 Fit：源图很少是正方形（线上这张是 320×426），
+                                // Fit 会左右留白，圆裁切后只剩中间一条，看着就不像圆头像。
+                                Image(avatar.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                            } else {
+                                Text("AI", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                     Spacer(Modifier.width(1.dp))
